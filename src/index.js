@@ -11,7 +11,9 @@ dns.setDefaultResultOrder("ipv4first");
 
 const { connectDb }    = require("./db");
 const { loadAllShops } = require("./saas/botManager");
-const { webappRoutes } = require("./routes/webapp");
+const { webappRoutes }   = require("./routes/webapp");
+const { billingRoutes }  = require("./routes/billing");
+const { startBillingScheduler } = require("./billing/billingNotifier");
 const { adminRoutes }  = require("./routes/admin");
 const { PORT, TZ, WEBAPP_BASE_URL, API_RATE_LIMIT } = require("./config");
 
@@ -71,6 +73,7 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         // Routes
         app.use("/api/webapp", webappRoutes());
         app.use("/api/admin",  adminRoutes());
+        app.use("/api/admin/billing", billingRoutes());
 
         app.get("/health", (req, res) =>
             res.json({ ok: true, ts: Date.now(), service: "botpos-saas", uptime: process.uptime() })
@@ -109,6 +112,9 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
 
         // 4. Botlarni ishga tushirish
         await loadAllShops();
+
+        // 5. Billing scheduler (har kuni 10:00)
+        startBillingScheduler();
 
         console.log("✅ BOT·POS SaaS tayyor!");
 

@@ -14,6 +14,7 @@ const Sale     = require("../models/Sale");
 const Expense  = require("../models/Expense");
 const Counter  = require("../models/Counter");
 const { formatMoney } = require("../utils/money");
+const { checkShopBilling, calcMonthlyPrice } = require("../billing/billingService");
 const { decrypt }     = require("../utils/encrypt");
 
 // ─── EXPENSE KATEGORIYALAR ───────────────────────────────────────────────────
@@ -384,6 +385,26 @@ function attachHandlers(bot, ctx) {
         if (!chatId || !userId) return;
         if (!(await isAuthed(shopId, userId))) return;
 
+
+        // Billing ma'lumoti
+        if (data === "billing:info") {
+            const freshShop = await require("../models/Shop").findById(shopId).lean();
+            const price = calcMonthlyPrice(freshShop);
+            const b = freshShop?.billing;
+            const due = b?.nextPaymentDate
+                ? require("dayjs")(b.nextPaymentDate).format("DD.MM.YYYY")
+                : "—";
+            return bot.sendMessage(chatId,
+                `💳 <b>To'lov ma'lumotlari</b>\n\n` +
+                `🏪 ${freshShop.name}\n` +
+                `📦 Tarif: ${freshShop.plan.toUpperCase()}\n` +
+                `💰 Oylik to'lov: <b>${price.toLocaleString()} so'm</b>\n` +
+                `📅 Muddat: <b>${due}</b>\n\n` +
+                `📞 To'lov uchun: @botpos_support`,
+                { parse_mode: "HTML" }
+            );
+        }
+
         // Qarz to'liq to'lash
         if (data.startsWith("debt_full:")) {
             const debtId = data.replace("debt_full:", "");
@@ -420,6 +441,17 @@ function attachHandlers(bot, ctx) {
         const userId = msg.from?.id;
         const text   = String(msg.text || "").trim();
         if (!userId) return;
+
+
+        // ── BILLING BLOK TEKSHIRUVI ─────────────────────────────────────────
+        const freshShop = await require("../models/Shop").findById(shopId).lean();
+        const billingResult = await checkShopBilling(freshShop);
+        if (billingResult.blocked) {
+            return bot.sendMessage(chatId, billingResult.message, {
+                parse_mode: "HTML",
+                reply_markup: billingResult.keyboard,
+            });
+        }
 
         // Kirish tekshiruvi
         if (!(await isAuthed(shopId, userId))) {
