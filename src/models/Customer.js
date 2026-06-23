@@ -1,3 +1,5 @@
+// src/models/Customer.js
+// FIX: isBlocked maydoni qo'shildi
 const { mongoose } = require("../db");
 
 const CustomerSchema = new mongoose.Schema({
@@ -7,8 +9,11 @@ const CustomerSchema = new mongoose.Schema({
     points:    { type: Number, default: 0 },
     refCount:  { type: Number, default: 0 },
     refPoints: { type: Number, default: 0 },
-    updatedAt: { type: Date, default: Date.now }
+    isBlocked: { type: Boolean, default: false, index: true },
+    updatedAt: { type: Date, default: Date.now },
 }, { versionKey: false });
 
 CustomerSchema.index({ shopId: 1, tgId: 1 }, { unique: true });
+CustomerSchema.index({ shopId: 1, isBlocked: 1 });
+
 module.exports = mongoose.model("Customer", CustomerSchema);

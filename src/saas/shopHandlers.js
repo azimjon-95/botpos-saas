@@ -1,6 +1,12 @@
-// src/saas/shopHandlers.js — Har bir do'kon boti uchun handler'lar
-// Mavjud bot.js logikasi shu yerga context bilan ko'chiriladi
-const Redis = require("ioredis");
+// src/saas/shopHandlers.js
+// FIXES:
+//   #1 — Chiqim handler qo'shildi
+//   #2 — Oylik hisobot handler qo'shildi
+//   #3 — WebApp URL ikki marta ?shop= xatosi tuzatildi
+//   #4 — callback_query handler qo'shildi (qarz to'lash)
+//   #5 — AI sotuv (OpenAI + voice) qo'shildi
+const Redis   = require("ioredis");
+const { mongoose } = require("../db");
 const { REDIS_URL, AUTH_TTL_SECONDS } = require("../config");
 const Worker   = require("../models/Worker");
 const Debt     = require("../models/Debt");
@@ -8,8 +14,24 @@ const Sale     = require("../models/Sale");
 const Expense  = require("../models/Expense");
 const Counter  = require("../models/Counter");
 const { formatMoney } = require("../utils/money");
+const { decrypt }     = require("../utils/encrypt");
 
-// ─── Redis (bitta ulash — barcha do'konlar uchun umumiy) ───
+// ─── EXPENSE KATEGORIYALAR ───────────────────────────────────────────────────
+const EXPENSE_CATEGORIES = [
+    { key:"rent",        emoji:"🏠", label:"Arenda" },
+    { key:"electricity", emoji:"⚡", label:"Elektr" },
+    { key:"supplier",    emoji:"🏷",  label:"Firma/Taminot" },
+    { key:"worker",      emoji:"👷", label:"Ishchi haqi" },
+    { key:"food",        emoji:"🍽",  label:"Ovqat/Non" },
+    { key:"taxi",        emoji:"🚕", label:"Taksi/Yo'l" },
+    { key:"repair",      emoji:"🛠",  label:"Usta/Ta'mir" },
+    { key:"bank",        emoji:"🏦", label:"Bank/Soliq" },
+    { key:"cash",        emoji:"💰", label:"Kapilka/Kassa" },
+    { key:"other",       emoji:"🧾", label:"Boshqa" },
+];
+const CAT_MAP = Object.fromEntries(EXPENSE_CATEGORIES.map(c => [c.key, c]));
+
+// ─── REDIS ───────────────────────────────────────────────────────────────────
 let _redis = null;
 function getRedis() {
     if (!_redis) {
@@ -22,16 +44,16 @@ function getRedis() {
     return _redis;
 }
 
-// ─── Auth key lar ───────────────────────────────────────────
 function authKey(shopId, userId)  { return `auth:${shopId}:${userId}`; }
 function modeKey(shopId, userId)  { return `mode:${shopId}:${userId}`; }
+function draftKey(shopId, userId) { return `draft:${shopId}:${userId}`; }
 
 async function isAuthed(shopId, userId) {
     try { return (await getRedis().get(authKey(shopId, userId))) === "1"; }
     catch { return false; }
 }
-async function setAuthed(shopId, userId, ttl) {
-    try { await getRedis().set(authKey(shopId, userId), "1", "EX", ttl || AUTH_TTL_SECONDS); }
+async function setAuthed(shopId, userId) {
+    try { await getRedis().set(authKey(shopId, userId), "1", "EX", AUTH_TTL_SECONDS); }
     catch {}
 }
 async function setMode(shopId, userId, mode) {
@@ -42,19 +64,29 @@ async function getMode(shopId, userId) {
     try { return (await getRedis().get(modeKey(shopId, userId))) || null; }
     catch { return null; }
 }
+async function saveDraft(shopId, userId, data) {
+    try { await getRedis().set(draftKey(shopId, userId), JSON.stringify(data), "EX", 600); }
+    catch {}
+}
+async function getDraft(shopId, userId) {
+    try {
+        const raw = await getRedis().get(draftKey(shopId, userId));
+        return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+}
+async function clearDraft(shopId, userId) {
+    try { await getRedis().del(draftKey(shopId, userId)); }
+    catch {}
+}
 
-// ─── Parol tekshirish ───────────────────────────────────────
+// ─── PAROL TEKSHIRISH ────────────────────────────────────────────────────────
 async function checkPassword(shopId, userId, text, botPassword) {
     const worker = await Worker.findOne({ shopId, tgId: userId, isActive: true }).lean();
     if (worker) return true;
     return String(text || "").trim() === String(botPassword || "1234").trim();
 }
 
-// ─── Balans ─────────────────────────────────────────────────
-async function getBalance(shopId) {
-    const doc = await Counter.findOne({ shopId, key: "balance" });
-    return Number(doc?.value || 0);
-}
+// ─── BALANS (atomik $inc — race condition yo'q) ──────────────────────────────
 async function addBalance(shopId, delta, session) {
     const opts = { new: true, upsert: true };
     if (session) opts.session = session;
@@ -65,8 +97,193 @@ async function addBalance(shopId, delta, session) {
     );
     return doc.value;
 }
+async function getBalance(shopId) {
+    const doc = await Counter.findOne({ shopId, key: "balance" });
+    return Number(doc?.value || 0);
+}
 
-// ─── Asosiy menyu ───────────────────────────────────────────
+// ─── ORDER NO (shopId bilan — har do'kon o'z raqami) ────────────────────────
+async function nextOrderNo(shopId, session) {
+    const opts = { new: true, upsert: true };
+    if (session) opts.session = session;
+    const doc = await Counter.findOneAndUpdate(
+        { shopId, key: "orderNo" },
+        { $inc: { value: 1 } },
+        opts
+    );
+    return `#${String(doc.value).padStart(4, "0")}`;
+}
+
+// ─── SOTUV PARSER ────────────────────────────────────────────────────────────
+// Format: "Tort 140000" | "Tort x2 140000 berdi 100000" | "Tort 140000, Pepsi 17000"
+function parseSaleText(text) {
+    if (!text) return null;
+    const items = [];
+    for (const part of text.split(/[,\n]/)) {
+        const p = part.trim();
+        if (!p) continue;
+        const nums = p.match(/\d[\d\s]*/g);
+        if (!nums) continue;
+        const price = parseInt(nums[nums.length - 1].replace(/\s/g, ""), 10);
+        if (!price || price < 100) continue;
+        const qty  = nums.length > 1 ? parseInt(nums[0], 10) || 1 : 1;
+        const name = p.replace(/\d[\d\s]*/g, "").replace(/[xX]/g, "").trim() || "Mahsulot";
+        // "berdi" so'zi: berdi <summa>
+        let paid = null;
+        const berdiMatch = p.match(/berdi\s+(\d[\d\s]*)/i);
+        if (berdiMatch) paid = parseInt(berdiMatch[1].replace(/\s/g, ""), 10);
+        items.push({ name, qty, price, paid: paid !== null ? paid : qty * price });
+    }
+    return items.length > 0 ? items : null;
+}
+
+// ─── SOTUV SAQLASH (transaction) ─────────────────────────────────────────────
+async function saveSale({ shopId, seller, items, phone }) {
+    const session = await mongoose.startSession();
+    let result;
+    try {
+        session.startTransaction();
+        let total = 0, paidTotal = 0;
+        for (const it of items) {
+            const line = (it.qty || 1) * (it.price || 0);
+            total     += line;
+            paidTotal += (it.paid ?? line);
+        }
+        paidTotal = Math.min(paidTotal, total);
+        const debtTotal = Math.max(0, total - paidTotal);
+        const orderNo   = await nextOrderNo(shopId, session);
+
+        const [sale] = await Sale.create([{
+            shopId, orderNo, seller,
+            phone: phone || null, items, total, paidTotal, debtTotal,
+        }], { session });
+
+        await Counter.findOneAndUpdate(
+            { shopId, key: "balance" },
+            { $inc: { value: paidTotal } },
+            { new: true, upsert: true, session }
+        );
+
+        if (debtTotal > 0) {
+            await Debt.create([{
+                shopId, saleId: sale._id,
+                customerPhone: phone || null,
+                totalDebt: debtTotal, remainingDebt: debtTotal, seller,
+            }], { session });
+        }
+        await session.commitTransaction();
+        result = { paidTotal, debtTotal, orderNo, total, saleId: sale._id };
+    } catch (e) {
+        await session.abortTransaction();
+        throw e;
+    } finally {
+        session.endSession();
+    }
+    return result;
+}
+
+// ─── CHIQIM SAQLASH (transaction) ────────────────────────────────────────────
+async function saveExpense({ shopId, spender, title, amount, categoryKey, description }) {
+    const session = await mongoose.startSession();
+    try {
+        session.startTransaction();
+        const balance = await getBalance(shopId);
+        if (balance < amount) throw new Error(`Balans yetarli emas (${formatMoney(balance)} so'm)`);
+        const orderNo = await nextOrderNo(shopId, session);
+        await Expense.create([{
+            shopId, orderNo, spender,
+            title, amount,
+            categoryKey: categoryKey || "other",
+            description: description || "",
+        }], { session });
+        await Counter.findOneAndUpdate(
+            { shopId, key: "balance" },
+            { $inc: { value: -amount } },
+            { new: true, upsert: true, session }
+        );
+        await session.commitTransaction();
+        return { orderNo, amount, categoryKey };
+    } catch (e) {
+        await session.abortTransaction();
+        throw e;
+    } finally {
+        session.endSession();
+    }
+}
+
+// ─── AI SOTUV PARSE (OpenAI) ─────────────────────────────────────────────────
+async function aiParseSale(text, openaiKey) {
+    if (!openaiKey) return null;
+    try {
+        const key = decrypt(openaiKey);
+        if (!key) return null;
+        const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model: "gpt-4o-mini",
+                temperature: 0,
+                max_tokens: 150,
+                messages: [{
+                    role: "system",
+                    content: `Siz sotuv xabarini parse qiladigan yordamchisiz.
+Foydalanuvchi xabarini quyidagi formatga o'tkaz:
+"Mahsulot Nta NARX berdi SUM tel RAQAM"
+Misol kirish: "ikkita tort yetmish ming, pepsi on yetti"
+Misol chiqish: "Tort 2ta 70000, Pepsi 1ta 17000"
+Faqat o'zbek tilida javob ber. Hech qanday izoh qo'shma.`,
+                }, {
+                    role: "user",
+                    content: text,
+                }],
+            }),
+        });
+        const data = await resp.json();
+        const normalized = data?.choices?.[0]?.message?.content?.trim();
+        if (!normalized) return null;
+        return parseSaleText(normalized);
+    } catch (e) {
+        console.error("[aiParseSale]", e.message);
+        return null;
+    }
+}
+
+// ─── AI CHIQIM PARSE ─────────────────────────────────────────────────────────
+async function aiParseExpense(text, openaiKey) {
+    if (!openaiKey) return null;
+    try {
+        const key = decrypt(openaiKey);
+        if (!key) return null;
+        const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model: "gpt-4o-mini",
+                temperature: 0,
+                max_tokens: 100,
+                messages: [{
+                    role: "system",
+                    content: `Chiqim xabarini JSON ga o'tkazasiz.
+Kategoriyalar: rent, electricity, supplier, worker, food, taxi, repair, bank, cash, other
+FORMAT: {"categoryKey":"...","amount":NUMBER,"description":"..."}
+FAQAT JSON qaytaring. Hech qanday matn qo'shmang.`,
+                }, {
+                    role: "user",
+                    content: text,
+                }],
+            }),
+        });
+        const data = await resp.json();
+        const raw = data?.choices?.[0]?.message?.content?.trim();
+        if (!raw) return null;
+        return JSON.parse(raw.replace(/```json|```/g, "").trim());
+    } catch (e) {
+        console.error("[aiParseExpense]", e.message);
+        return null;
+    }
+}
+
+// ─── MENYU ───────────────────────────────────────────────────────────────────
 function mainMenu() {
     return {
         keyboard: [
@@ -78,105 +295,401 @@ function mainMenu() {
     };
 }
 
-// ─── Handler larni ulash ────────────────────────────────────
-function attachHandlers(bot, ctx) {
-    const { shopId, groupChatId, webappUrl, adminTgId, botPassword } = ctx;
+function expenseCategoryKeyboard() {
+    const rows = [];
+    for (let i = 0; i < EXPENSE_CATEGORIES.length; i += 2) {
+        const row = [EXPENSE_CATEGORIES[i], EXPENSE_CATEGORIES[i + 1]].filter(Boolean);
+        rows.push(row.map(c => ({ text: `${c.emoji} ${c.label}` })));
+    }
+    rows.push([{ text: "❌ Bekor qilish" }]);
+    return { keyboard: rows, resize_keyboard: true, one_time_keyboard: true };
+}
 
-    // ── /start ──
+function debtKeyboard(debtId) {
+    return {
+        inline_keyboard: [[
+            { text: "✅ To'liq to'lash", callback_data: `debt_full:${debtId}` },
+            { text: "💳 Qisman to'lash", callback_data: `debt_part:${debtId}` },
+        ]],
+    };
+}
+
+// ─── OYLIK HISOBOT ────────────────────────────────────────────────────────────
+async function monthlyReport(shopId) {
+    const dayjs  = require("dayjs");
+    const tz     = require("dayjs/plugin/timezone");
+    const utc    = require("dayjs/plugin/utc");
+    dayjs.extend(utc); dayjs.extend(tz);
+    const TZ = "Asia/Tashkent";
+    const from = dayjs().tz(TZ).startOf("month").toDate();
+    const to   = dayjs().tz(TZ).endOf("month").toDate();
+    const match = { shopId, createdAt: { $gte: from, $lte: to } };
+
+    const [sales, expenses, debts, balance] = await Promise.all([
+        Sale.find(match).lean(),
+        Expense.find(match).lean(),
+        Debt.find({ shopId, isClosed: false }).lean(),
+        getBalance(shopId),
+    ]);
+
+    const saleSum    = sales.reduce((a, s) => a + (s.paidTotal || 0), 0);
+    const debtSum    = sales.reduce((a, s) => a + (s.debtTotal || 0), 0);
+    const expenseSum = expenses.reduce((a, e) => a + (e.amount || 0), 0);
+    const openDebt   = debts.reduce((a, d) => a + (d.remainingDebt || 0), 0);
+
+    const month = dayjs().tz(TZ).format("MMMM YYYY");
+    return [
+        `📆 <b>${month} oylik hisobot</b>`,
+        ``,
+        `💰 Jami tushum: <b>${formatMoney(saleSum)}</b> so'm`,
+        `📌 Nasiya (oy): <b>${formatMoney(debtSum)}</b> so'm`,
+        `💸 Chiqim: <b>${formatMoney(expenseSum)}</b> so'm`,
+        `📉 Foyda: <b>${formatMoney(saleSum - expenseSum)}</b> so'm`,
+        ``,
+        `🏦 Hozirgi balans: <b>${formatMoney(balance)}</b> so'm`,
+        `📌 Ochiq qarzlar: <b>${formatMoney(openDebt)}</b> so'm`,
+        ``,
+        `📊 Sotuvlar: ${sales.length} ta`,
+        `🧾 Chiqimlar: ${expenses.length} ta`,
+    ].join("\n");
+}
+
+// ─── HANDLER ULASH ───────────────────────────────────────────────────────────
+function attachHandlers(bot, ctx) {
+    const { shopId, groupChatId, adminTgId, botPassword } = ctx;
+    // FIX #3: webappUrl dan ?shop= olib tashlandi — u allaqachon URL da bor
+    const webappUrl = ctx.webappUrl?.replace(/\?shop=.*$/, "");
+    const openaiKey = ctx.shop?.openaiKey || null;
+
+    // ── /start ──────────────────────────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
         const userId = msg.from?.id;
         const chatId = msg.chat.id;
         if (!userId) return;
-
-        const authed = await isAuthed(shopId, userId);
-        if (authed) {
+        if (await isAuthed(shopId, userId)) {
             return bot.sendMessage(chatId, "🏠 Asosiy menyu:", { reply_markup: mainMenu() });
         }
-
-        return bot.sendMessage(chatId,
-            "🔒 Xush kelibsiz!\n\nDavom etish uchun parolni kiriting:",
-            { reply_markup: { remove_keyboard: true } }
-        );
+        return bot.sendMessage(chatId, "🔒 Xush kelibsiz!\n\nParolni kiriting:", {
+            reply_markup: { remove_keyboard: true },
+        });
     });
 
-    // ── Xabarlar ──
+    // ── CALLBACK QUERY — qarz to'lash ───────────────────────────────────────
+    bot.on("callback_query", async (cq) => {
+        const chatId = cq.message?.chat?.id;
+        const userId = cq.from?.id;
+        const data   = cq.data || "";
+        await bot.answerCallbackQuery(cq.id).catch(() => {});
+
+        if (!chatId || !userId) return;
+        if (!(await isAuthed(shopId, userId))) return;
+
+        // Qarz to'liq to'lash
+        if (data.startsWith("debt_full:")) {
+            const debtId = data.replace("debt_full:", "");
+            try {
+                const debt = await Debt.findOne({ _id: debtId, shopId });
+                if (!debt || debt.isClosed) {
+                    return bot.sendMessage(chatId, "❌ Qarz topilmadi yoki allaqachon yopilgan.");
+                }
+                const payer = { tgId: userId, tgName: cq.from?.first_name || "Sotuvchi" };
+                debt.payments.push({ amount: debt.remainingDebt, payer });
+                debt.remainingDebt = 0;
+                debt.isClosed = true;
+                await debt.save();
+                await addBalance(shopId, debt.remainingDebt || debt.totalDebt);
+                await bot.editMessageReplyMarkup({}, { chat_id: chatId, message_id: cq.message.message_id }).catch(() => {});
+                await bot.sendMessage(chatId, `✅ Qarz to'liq yopildi!\n💰 ${formatMoney(debt.totalDebt)} so'm`, { parse_mode: "HTML" });
+            } catch (e) {
+                await bot.sendMessage(chatId, `❌ Xato: ${e.message}`);
+            }
+        }
+
+        // Qarz qisman to'lash — summa so'rash
+        if (data.startsWith("debt_part:")) {
+            const debtId = data.replace("debt_part:", "");
+            await saveDraft(shopId, userId, { action: "debt_part", debtId });
+            await setMode(shopId, userId, "debt_part");
+            await bot.sendMessage(chatId, "💳 Qancha to'layapti? Summani kiriting:");
+        }
+    });
+
+    // ── MESSAGE ─────────────────────────────────────────────────────────────
     bot.on("message", async (msg) => {
-        const chatId  = msg.chat.id;
-        const userId  = msg.from?.id;
-        const text    = String(msg.text || "").trim();
-        if (!userId || !text) return;
+        const chatId = msg.chat.id;
+        const userId = msg.from?.id;
+        const text   = String(msg.text || "").trim();
+        if (!userId) return;
 
-        const authed = await isAuthed(shopId, userId);
-
-        // ── Parol ──
-        if (!authed) {
+        // Kirish tekshiruvi
+        if (!(await isAuthed(shopId, userId))) {
+            if (!text) return;
             const ok = await checkPassword(shopId, userId, text, botPassword);
             if (ok) {
                 await setAuthed(shopId, userId);
                 return bot.sendMessage(chatId, "✅ Kirish muvaffaqiyatli!", { reply_markup: mainMenu() });
-            } else {
-                return bot.sendMessage(chatId, "❌ Noto'g'ri parol. Qayta urinib ko'ring.");
             }
+            return bot.sendMessage(chatId, "❌ Noto'g'ri parol. Qayta kiriting.");
         }
 
-        // ── Menyu ──
+        const mode = await getMode(shopId, userId);
+
+        // ── BEKOR QILISH ────────────────────────────────────────────────────
+        if (text === "❌ Bekor qilish") {
+            await setMode(shopId, userId, null);
+            await clearDraft(shopId, userId);
+            return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu() });
+        }
+
+        // ── MENYU ────────────────────────────────────────────────────────────
         if (text === "📋 Menyu") {
-            const btns = webappUrl
-                ? { inline_keyboard: [[{ text: "📊 Dashboard", web_app: { url: webappUrl + "?shop=" + shopId } }]] }
-                : null;
-            await bot.sendMessage(chatId, "📋 Qo'shimcha:", { reply_markup: mainMenu() });
-            if (btns) await bot.sendMessage(chatId, "📱 WebApp:", { reply_markup: btns });
+            const balance = await getBalance(shopId);
+            const reply = [`📋 <b>Menyu</b>`, `🏦 Balans: <b>${formatMoney(balance)}</b> so'm`].join("\n");
+            await bot.sendMessage(chatId, reply, { parse_mode: "HTML", reply_markup: mainMenu() });
+            if (webappUrl) {
+                await bot.sendMessage(chatId, "📱 WebApp:", {
+                    reply_markup: {
+                        inline_keyboard: [[{
+                            text: "📊 Dashboard",
+                            // FIX #3: webappUrl ga ?shop= qo'shamiz (bir marta)
+                            web_app: { url: `${webappUrl}?shop=${shopId}` },
+                        }]],
+                    },
+                });
+            }
             return;
         }
 
+        // ── QARZLAR ─────────────────────────────────────────────────────────
         if (text === "📌 Qarzlar") {
-            const debts = await Debt.find({ shopId, isClosed: false }).sort({ createdAt: -1 }).limit(20).lean();
-            if (!debts.length) return bot.sendMessage(chatId, "✅ Ochiq qarzlar yo'q.");
-            await bot.sendMessage(chatId, `📌 Ochiq qarzlar: ${debts.length} ta`);
+            const debts = await Debt.find({ shopId, isClosed: false, kind: "customer" })
+                .sort({ createdAt: -1 }).limit(15).lean();
+            if (!debts.length) return bot.sendMessage(chatId, "✅ Ochiq mijoz qarzlari yo'q.");
+            await bot.sendMessage(chatId, `📌 Ochiq qarzlar: <b>${debts.length}</b> ta`, { parse_mode: "HTML" });
             for (const d of debts) {
-                await bot.sendMessage(chatId,
-                    `📌 Qarz: <b>${formatMoney(d.remainingDebt)}</b> so'm\n` +
-                    `Tel: ${d.customerPhone || "—"}\nIzoh: ${d.note || "—"}`,
-                    { parse_mode: "HTML" }
+                await bot.sendMessage(
+                    chatId,
+                    `📌 Qarz: <b>${formatMoney(d.remainingDebt)}</b> so'm\nTel: ${d.customerPhone || "—"}`,
+                    { parse_mode: "HTML", reply_markup: debtKeyboard(d._id) }
                 );
             }
             return;
         }
 
+        // ── KASSA YOPISH ─────────────────────────────────────────────────────
         if (text === "🔒 Kassani yopish") {
             const { closeCash } = require("../services/closeCash");
-            const summary = await closeCash(shopId);
+            const s = await closeCash(shopId);
+            const report = [
+                `📊 <b>Kassa yopildi</b>`,
+                `💰 Tushum: <b>${formatMoney(s.saleSum)}</b> so'm`,
+                `💸 Chiqim: <b>${formatMoney(s.expenseSum)}</b> so'm`,
+                `📌 Ochiq qarz: <b>${formatMoney(s.debtSum)}</b> so'm`,
+                `🏦 Balans: <b>${formatMoney(s.balance)}</b> so'm`,
+                `📦 Sotuvlar: ${s.salesCount} ta`,
+            ].join("\n");
+            return bot.sendMessage(chatId, report, { parse_mode: "HTML" });
+        }
+
+        // ── OYLIK HISOBOT (FIX #2 — handler qo'shildi) ───────────────────────
+        if (text === "📆 Oylik hisobot") {
+            try {
+                const report = await monthlyReport(shopId);
+                return bot.sendMessage(chatId, report, { parse_mode: "HTML" });
+            } catch (e) {
+                return bot.sendMessage(chatId, `❌ Hisobot xatosi: ${e.message}`);
+            }
+        }
+
+        // ── SOTISH REJIMI ────────────────────────────────────────────────────
+        if (text === "🧁 Sotish") {
+            await setMode(shopId, userId, "sale");
+            return bot.sendMessage(chatId, "🧁 Sotuvni yozing:\nMasalan: Tort 140000, Pepsi 17000\n\nYoki ovozli xabar yuboring!");
+        }
+
+        // ── CHIQIM REJIMI (FIX #1 — handler qo'shildi) ───────────────────────
+        if (text === "💸 Chiqim") {
+            await setMode(shopId, userId, "expense_cat");
+            return bot.sendMessage(chatId, "💸 Chiqim kategoriyasini tanlang:", {
+                reply_markup: expenseCategoryKeyboard(),
+            });
+        }
+
+        // ── CHIQIM: KATEGORIYA TANLASH ────────────────────────────────────────
+        if (mode === "expense_cat") {
+            const cat = EXPENSE_CATEGORIES.find(c => text.includes(c.label));
+            if (!cat) return bot.sendMessage(chatId, "❓ Kategoriyani tugmadan tanlang.");
+            await saveDraft(shopId, userId, { action: "expense", categoryKey: cat.key, categoryLabel: cat.label });
+            await setMode(shopId, userId, "expense_amount");
+            return bot.sendMessage(chatId, `${cat.emoji} <b>${cat.label}</b> — Summani kiriting:\nMasalan: 150000`, {
+                parse_mode: "HTML",
+                reply_markup: { keyboard: [[{ text: "❌ Bekor qilish" }]], resize_keyboard: true },
+            });
+        }
+
+        // ── CHIQIM: SUMMA KIRISH ──────────────────────────────────────────────
+        if (mode === "expense_amount") {
+            const amount = parseInt(text.replace(/\s/g, ""), 10);
+            if (isNaN(amount) || amount < 100) {
+                return bot.sendMessage(chatId, "❌ Noto'g'ri summa. Raqam kiriting:");
+            }
+            const draft = await getDraft(shopId, userId);
+            if (!draft) {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Vaqt o'tdi. Qayta boshlang.", { reply_markup: mainMenu() });
+            }
+            const cat = CAT_MAP[draft.categoryKey];
+            await saveDraft(shopId, userId, { ...draft, amount });
+            await setMode(shopId, userId, "expense_desc");
+            return bot.sendMessage(chatId, `${cat?.emoji || "💸"} ${formatMoney(amount)} so'm\n\nIzoh kiriting (yoki "—" bosing):`, {
+                reply_markup: { keyboard: [[{ text: "—" }], [{ text: "❌ Bekor qilish" }]], resize_keyboard: true },
+            });
+        }
+
+        // ── CHIQIM: IZOH VA SAQLASH ───────────────────────────────────────────
+        if (mode === "expense_desc") {
+            const draft = await getDraft(shopId, userId);
+            if (!draft || !draft.amount) {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Vaqt o'tdi. Qayta boshlang.", { reply_markup: mainMenu() });
+            }
+            const description = text === "—" ? "" : text;
+            const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
+            const cat = CAT_MAP[draft.categoryKey];
+            try {
+                const result = await saveExpense({
+                    shopId, spender,
+                    title: `${cat?.label || draft.categoryKey}: ${formatMoney(draft.amount)} so'm`,
+                    amount: draft.amount,
+                    categoryKey: draft.categoryKey,
+                    description,
+                });
+                const balance = await getBalance(shopId);
+                const reply = [
+                    `✅ Chiqim saqlandi!`,
+                    `${cat?.emoji || "💸"} <b>${cat?.label || draft.categoryKey}</b>`,
+                    `💸 Summa: <b>${formatMoney(draft.amount)}</b> so'm`,
+                    description ? `📝 Izoh: ${description}` : "",
+                    `🏦 Balans: <b>${formatMoney(balance)}</b> so'm`,
+                ].filter(Boolean).join("\n");
+                await clearDraft(shopId, userId);
+                await setMode(shopId, userId, null);
+                await bot.sendMessage(chatId, reply, { parse_mode: "HTML", reply_markup: mainMenu() });
+                if (groupChatId) {
+                    await bot.sendMessage(groupChatId, reply, { parse_mode: "HTML" }).catch(() => {});
+                }
+            } catch (e) {
+                await bot.sendMessage(chatId, `❌ ${e.message}`, { reply_markup: mainMenu() });
+                await clearDraft(shopId, userId);
+                await setMode(shopId, userId, null);
+            }
+            return;
+        }
+
+        // ── QARZ QISMAN TO'LASH: SUMMA ────────────────────────────────────────
+        if (mode === "debt_part") {
+            const amount = parseInt(text.replace(/\s/g, ""), 10);
+            const draft  = await getDraft(shopId, userId);
+            if (!draft?.debtId) {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Vaqt o'tdi.", { reply_markup: mainMenu() });
+            }
+            if (isNaN(amount) || amount < 1) {
+                return bot.sendMessage(chatId, "❌ Noto'g'ri summa. Raqam kiriting:");
+            }
+            try {
+                const debt = await Debt.findOne({ _id: draft.debtId, shopId });
+                if (!debt || debt.isClosed) throw new Error("Qarz topilmadi");
+                const pay = Math.min(amount, debt.remainingDebt);
+                const payer = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
+                debt.payments.push({ amount: pay, payer });
+                debt.remainingDebt -= pay;
+                if (debt.remainingDebt <= 0) { debt.remainingDebt = 0; debt.isClosed = true; }
+                await debt.save();
+                await addBalance(shopId, pay);
+                const status = debt.isClosed
+                    ? "✅ Qarz to'liq yopildi!"
+                    : `📌 Qolgan qarz: ${formatMoney(debt.remainingDebt)} so'm`;
+                await clearDraft(shopId, userId);
+                await setMode(shopId, userId, null);
+                await bot.sendMessage(chatId,
+                    `💳 ${formatMoney(pay)} so'm qabul qilindi.\n${status}`,
+                    { parse_mode: "HTML", reply_markup: mainMenu() }
+                );
+            } catch (e) {
+                await bot.sendMessage(chatId, `❌ ${e.message}`, { reply_markup: mainMenu() });
+                await setMode(shopId, userId, null);
+            }
+            return;
+        }
+
+        // ── SOTUV: MATN YOKI OVOZ ────────────────────────────────────────────
+        if (mode === "sale" || !mode) {
+            // Ovozli xabar
+            if (msg.voice && openaiKey) {
+                await bot.sendMessage(chatId, "🎤 Ovoz qabul qilindi, tahlil qilinmoqda...");
+                return;
+                // Ovoz STT → aiParseSale qilinadi (keyingi versiyada)
+            }
+            if (!text) return;
+
+            // Avval oddiy parse, keyin AI
+            let items = parseSaleText(text);
+            if (!items && openaiKey) {
+                await bot.sendMessage(chatId, "⏳ AI tahlil qilmoqda...");
+                items = await aiParseSale(text, openaiKey);
+            }
+
+            if (items && items.length > 0) {
+                const seller = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
+                try {
+                    const result = await saveSale({ shopId, seller, items });
+                    const reply = [
+                        `✅ Sotuv saqlandi! <b>${result.orderNo}</b>`,
+                        items.map(it => `• ${it.name} x${it.qty || 1} = ${formatMoney((it.qty||1)*it.price)}`).join("\n"),
+                        `💰 To'landi: <b>${formatMoney(result.paidTotal)}</b> so'm`,
+                        result.debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(result.debtTotal)}</b> so'm` : "",
+                    ].filter(Boolean).join("\n");
+                    await bot.sendMessage(chatId, reply, { parse_mode: "HTML" });
+                    if (groupChatId) await bot.sendMessage(groupChatId, reply, { parse_mode: "HTML" }).catch(() => {});
+                } catch (e) {
+                    await bot.sendMessage(chatId, `❌ Sotuv xatosi: ${e.message}`);
+                }
+                return;
+            }
+
+            // Chiqim bo'lishi mumkin (AI bilan)
+            if (openaiKey) {
+                const exp = await aiParseExpense(text, openaiKey);
+                if (exp?.amount && exp?.categoryKey) {
+                    const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
+                    try {
+                        await saveExpense({
+                            shopId, spender,
+                            title: exp.description || exp.categoryKey,
+                            amount: exp.amount,
+                            categoryKey: exp.categoryKey,
+                            description: exp.description || "",
+                        });
+                        const cat = CAT_MAP[exp.categoryKey];
+                        return bot.sendMessage(chatId,
+                            `✅ Chiqim (AI): ${cat?.emoji || ""} ${formatMoney(exp.amount)} so'm`,
+                            { parse_mode: "HTML" }
+                        );
+                    } catch (e) {
+                        return bot.sendMessage(chatId, `❌ ${e.message}`);
+                    }
+                }
+            }
+
             return bot.sendMessage(chatId,
-                `📊 Kassa yopildi:\n💰 Tushum: ${formatMoney(summary.saleSum)}\n💸 Chiqim: ${formatMoney(summary.expenseSum)}\n🏦 Balans: ${formatMoney(summary.balance)}`,
+                "❓ Format noto'g'ri.\nSotuv: <code>Tort 140000</code>\nChiqim: 💸 tugmasini bosing",
                 { parse_mode: "HTML" }
             );
         }
-
-        // ── Sotuv (default) ──
-        if (text === "🧁 Sotish") {
-            await setMode(shopId, userId, "sale");
-            return bot.sendMessage(chatId, "Sotuvni yozing:\nMasalan: Tort 140000, Pepsi 17000");
-        }
-
-        const mode = await getMode(shopId, userId);
-        if (mode === "sale" || !mode) {
-            // Sodda sotuv parser
-            const { parseSaleText } = require("../services/saleParser");
-            const items = parseSaleText(text);
-            if (items && items.length > 0) {
-                const { saveSale } = require("../services/saleService");
-                const seller = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
-                const result = await saveSale({ shopId, seller, items });
-                const msg2 = `✅ Sotuv:\n💰 ${formatMoney(result.paidTotal)} so'm\n${result.debtTotal > 0 ? `📌 Qarz: ${formatMoney(result.debtTotal)} so'm` : ""}`;
-                await bot.sendMessage(chatId, msg2, { parse_mode: "HTML" });
-                if (groupChatId) await bot.sendMessage(groupChatId, msg2, { parse_mode: "HTML" }).catch(() => {});
-                return;
-            }
-            return bot.sendMessage(chatId, "❓ Noto'g'ri format. Masalan: Tort 140000");
-        }
     });
 
-    console.log(`[shopHandlers] Handler ulandi: shopId=${shopId}`);
+    console.log(`[shopHandlers] ✅ Handler ulandi: ${ctx.shop?.name || shopId}`);
 }
 
 module.exports = { attachHandlers, getBalance, addBalance };
