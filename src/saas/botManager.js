@@ -37,7 +37,9 @@ async function startShopBot(shop) {
     }
 
     if (!botToken) {
-        console.warn(`[botManager] ${shop.name}: botToken bo'sh — skip`);
+        console.warn(`[botManager] ${shop.name}: botToken yo'q — pending holat`);
+        // Status ni pending ga o'tkazish
+        await Shop.updateOne({ _id: shop._id }, { status: "pending", isActive: false }).catch(()=>{});
         return null;
     }
 
@@ -90,7 +92,8 @@ async function stopShopBot(shopId) {
 }
 
 async function loadAllShops() {
-    const shops = await Shop.find({ isActive: true }).lean();
+    // pending do'konlar yuklanmaydi — token yo'q
+    const shops = await Shop.find({ status: "active", isActive: true }).lean();
     console.log(`[botManager] ${shops.length} ta faol do'kon`);
     const results = await Promise.allSettled(shops.map(s => startShopBot(s)));
     const ok  = results.filter(r => r.status === "fulfilled" && r.value).length;

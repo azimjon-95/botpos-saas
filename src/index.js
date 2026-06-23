@@ -12,7 +12,8 @@ dns.setDefaultResultOrder("ipv4first");
 const { connectDb }    = require("./db");
 const { loadAllShops } = require("./saas/botManager");
 const { webappRoutes }   = require("./routes/webapp");
-const { billingRoutes }  = require("./routes/billing");
+const { billingRoutes }    = require("./routes/billing");
+const { onboardingRoutes } = require("./routes/onboarding");
 const { startBillingScheduler } = require("./billing/billingNotifier");
 const { adminRoutes }  = require("./routes/admin");
 const { PORT, TZ, WEBAPP_BASE_URL, API_RATE_LIMIT } = require("./config");
@@ -74,6 +75,7 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         app.use("/api/webapp", webappRoutes());
         app.use("/api/admin",  adminRoutes());
         app.use("/api/admin/billing", billingRoutes());
+        app.use("/api/onboarding",      onboardingRoutes());  // PUBLIC
 
         app.get("/health", (req, res) =>
             res.json({ ok: true, ts: Date.now(), service: "botpos-saas", uptime: process.uptime() })

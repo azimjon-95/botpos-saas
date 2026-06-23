@@ -15,6 +15,7 @@ const mongoose   = require("mongoose");
 
 const Shop       = require("../models/Shop");
 const AuditLog   = require("../models/AuditLog");
+const { getSystemUsageStats } = require("../services/openaiService");
 const SuperAdmin = require("../models/SuperAdmin");
 const Worker     = require("../models/Worker");
 const Customer   = require("../models/Customer");
@@ -24,7 +25,7 @@ const { reloadShop, stopShopBot, startShopBot, getStatus } = require("../saas/bo
 const { ADMIN_JWT_SECRET, WEBAPP_BASE_URL } = require("../config");
 
 // Token maydonlarini API da ko'rsatmaymiz
-const HIDE = "-botToken -customerBotToken -openaiKey";
+const HIDE = "-botToken -customerBotToken";  // openaiKey endi yo'q
 
 function audit(adminEmail, action, shopId, shopName, details, ip) {
     return AuditLog.create({ adminEmail, action, shopId: shopId || null, shopName: shopName || "", details: details || {}, ip: ip || "" }).catch(() => {});
@@ -162,9 +163,10 @@ function adminRoutes() {
             const {
                 name, ownerName, phone, address,
                 botToken, customerBotToken, customerBotUsername,
-                groupChatId, openaiKey,
+                groupChatId,
                 bakerTgId, adminTgId, minQrPaid, botPassword,
                 plan, notes, statsChatId, backupChatId,
+                onboardingNotes, selectedPlan, calculatedPrice, hasPrinter, printerType,
             } = req.body || {};
 
             if (!name || !ownerName || !phone || !botToken || !groupChatId)
@@ -180,7 +182,7 @@ function adminRoutes() {
                 customerBotToken:    customerBotToken ? encrypt(customerBotToken) : "",
                 customerBotUsername: customerBotUsername || "",
                 groupChatId,
-                openaiKey:    openaiKey ? encrypt(openaiKey) : "",
+
                 bakerTgId:    bakerTgId    || null,
                 statsChatId:  statsChatId  || null,
                 backupChatId: backupChatId || null,
@@ -189,7 +191,17 @@ function adminRoutes() {
                 botPassword:  botPassword || "1234",
                 plan:         plan || "starter",
                 notes:        notes || "",
-                webappUrl:    `${WEBAPP_BASE_URL}?shop=${_id}`,  // bir marta DB call
+                webappUrl:    `${WEBAPP_BASE_URL}?shop=${_id}`,
+                status:       "pending",  // Token kelguncha pending
+                isActive:     false,
+                onboarding: {
+                    submittedAt:     new Date(),
+                    selectedPlan:    selectedPlan || plan || "starter",
+                    hasPrinter:      !!hasPrinter,
+                    printerType:     printerType || "none",
+                    notes:           onboardingNotes || notes || "",
+                    calculatedPrice: Number(calculatedPrice) || 0,
+                },
             });
 
             try {
@@ -219,7 +231,6 @@ function adminRoutes() {
             }
             if (req.body.botToken)         update.botToken         = encrypt(req.body.botToken);
             if (req.body.customerBotToken) update.customerBotToken = encrypt(req.body.customerBotToken);
-            if (req.body.openaiKey)        update.openaiKey        = encrypt(req.body.openaiKey);
 
             const shop = await Shop.findByIdAndUpdate(req.params.id, update, { new: true })
                 .select(HIDE).lean();
@@ -407,8 +418,92 @@ function adminRoutes() {
         } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
     });
 
+
+    // ─── DO'KON TOKENLARINI BERISH VA AKTIVLASHTIRISH ────────────────────────
+    // POST /api/admin/shops/:id/activate
+    // pending → active: tokenlar berildi, bot ishga tushdi
+    r.post("/shops/:id/activate", async (req, res) => {
+        try {
+            const { botToken, customerBotToken, customerBotUsername, groupChatId, adminTgId } = req.body;
+            if (!botToken || !groupChatId)
+                return res.status(400).json({ ok: false, error: "botToken va groupChatId kerak" });
+
+            const update = {
+                botToken:            encrypt(botToken),
+                groupChatId,
+                status:              "active",
+                isActive:            true,
+                "onboarding.approvedAt": new Date(),
+                "onboarding.approvedBy": req.adminEmail,
+            };
+            if (customerBotToken) {
+                update.customerBotToken    = encrypt(customerBotToken);
+                update.customerBotUsername = customerBotUsername || "";
+            }
+            if (adminTgId) update.adminTgId = Number(adminTgId);
+
+            const shop = await Shop.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
+            if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
+
+            // Botni ishga tushirish
+            try {
+                const { startShopBot } = require("../saas/botManager");
+                await startShopBot(await Shop.findById(shop._id).lean());
+            } catch (e) {
+                console.error("[activate] bot start xato:", e.message);
+            }
+
+            await audit(req.adminEmail, "shop.activate", shop._id, shop.name,
+                { tokenAdded: true }, req.ip);
+
+            res.json({ ok: true, data: { shopId: shop._id, status: "active",
+                webappUrl: shop.webappUrl, message: "Do'kon aktivlashtirildi, bot ishga tushdi" } });
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
+    // ─── PENDING DO'KONLAR RO'YXATI ──────────────────────────────────────────
+    // GET /api/admin/shops/pending
+    r.get("/shops/pending", async (req, res) => {
+        try {
+            const shops = await Shop.find({ status: "pending" })
+                .select(HIDE).sort({ createdAt: -1 }).lean();
+            res.json({ ok: true, data: { shops, total: shops.length } });
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
     r.get("/bots/status", (req, res) => {
         res.json({ ok: true, data: getStatus() });
+    });
+
+    // ─── AI TOKEN SARFI ────────────────────────────────────────────────────
+    // GET /api/admin/ai/usage
+    r.get("/ai/usage", async (req, res) => {
+        try {
+            const stats = await getSystemUsageStats();
+            const USD_TO_UZS = 12800;
+            const data = {
+                system: {
+                    totalTokens:   stats.totals.tokens,
+                    totalRequests: stats.totals.requests,
+                    totalCostUSD:  +stats.totals.costUSD.toFixed(4),
+                    totalCostUZS:  Math.round(stats.totals.costUSD * USD_TO_UZS),
+                    thisMonthTokens: stats.totals.thisMonthTokens,
+                    thisMonthCostUSD: +(stats.totals.thisMonthTokens / 1000 * 0.00015).toFixed(4),
+                },
+                shops: stats.shops.map(s => ({
+                    _id:          s._id,
+                    name:         s.name,
+                    plan:         s.plan,
+                    totalTokens:  s.aiUsage?.totalTokens  || 0,
+                    totalRequests:s.aiUsage?.totalRequests || 0,
+                    thisMonthTokens:   s.aiUsage?.thisMonthTokens   || 0,
+                    thisMonthRequests: s.aiUsage?.thisMonthRequests  || 0,
+                    estimatedCostUSD:  +(s.aiUsage?.estimatedCostUSD || 0).toFixed(4),
+                    estimatedCostUZS:  Math.round((s.aiUsage?.estimatedCostUSD || 0) * USD_TO_UZS),
+                })).sort((a, b) => b.totalTokens - a.totalTokens),
+            };
+            res.json({ ok: true, data });
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
     });
 
     return r;

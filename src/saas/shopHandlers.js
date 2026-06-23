@@ -15,7 +15,7 @@ const Expense  = require("../models/Expense");
 const Counter  = require("../models/Counter");
 const { formatMoney } = require("../utils/money");
 const { checkShopBilling, calcMonthlyPrice } = require("../billing/billingService");
-const { decrypt }     = require("../utils/encrypt");
+// decrypt olib tashlandi — openaiKey endi markaziy
 
 // ─── EXPENSE KATEGORIYALAR ───────────────────────────────────────────────────
 const EXPENSE_CATEGORIES = [
@@ -360,7 +360,7 @@ function attachHandlers(bot, ctx) {
     const { shopId, groupChatId, adminTgId, botPassword } = ctx;
     // FIX #3: webappUrl dan ?shop= olib tashlandi — u allaqachon URL da bor
     const webappUrl = ctx.webappUrl?.replace(/\?shop=.*$/, "");
-    const openaiKey = ctx.shop?.openaiKey || null;
+    // openaiKey endi markaziy — config.js da OPENAI_API_KEY
 
     // ── /start ──────────────────────────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
@@ -658,7 +658,8 @@ function attachHandlers(bot, ctx) {
         // ── SOTUV: MATN YOKI OVOZ ────────────────────────────────────────────
         if (mode === "sale" || !mode) {
             // Ovozli xabar
-            if (msg.voice && openaiKey) {
+            const { OPENAI_API_KEY } = require('../config');
+            if (msg.voice && OPENAI_API_KEY) {
                 await bot.sendMessage(chatId, "🎤 Ovoz qabul qilindi, tahlil qilinmoqda...");
                 return;
                 // Ovoz STT → aiParseSale qilinadi (keyingi versiyada)
@@ -667,9 +668,9 @@ function attachHandlers(bot, ctx) {
 
             // Avval oddiy parse, keyin AI
             let items = parseSaleText(text);
-            if (!items && openaiKey) {
+            if (!items && OPENAI_API_KEY) {
                 await bot.sendMessage(chatId, "⏳ AI tahlil qilmoqda...");
-                items = await aiParseSale(text, openaiKey);
+                items = await parseSaleAI(text, shopId).then(t => t ? parseSaleText(t) : null);
             }
 
             if (items && items.length > 0) {
@@ -691,8 +692,8 @@ function attachHandlers(bot, ctx) {
             }
 
             // Chiqim bo'lishi mumkin (AI bilan)
-            if (openaiKey) {
-                const exp = await aiParseExpense(text, openaiKey);
+            if (OPENAI_API_KEY) {
+                const exp = await parseExpenseAI(text, shopId);
                 if (exp?.amount && exp?.categoryKey) {
                     const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
                     try {
