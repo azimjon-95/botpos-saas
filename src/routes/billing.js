@@ -35,7 +35,7 @@ function billingRoutes() {
 
             const [shops, total] = await Promise.all([
                 Shop.find(filter)
-                    .select("-botToken -customerBotToken -openaiKey")
+                    .select("-botToken -customerBotToken")
                     .sort({ "billing.nextPaymentDate": 1 })
                     .skip((+page - 1) * +limit).limit(+limit).lean(),
                 Shop.countDocuments(filter),
@@ -59,7 +59,7 @@ function billingRoutes() {
     r.get("/shops/:id", async (req, res) => {
         try {
             const shop = await Shop.findById(req.params.id)
-                .select("-botToken -customerBotToken -openaiKey").lean();
+                .select("-botToken -customerBotToken").lean();
             if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
 
             const history = await getPaymentHistory(shop._id, 12);
@@ -93,7 +93,7 @@ function billingRoutes() {
                 update["billing.printerMonthlyPrice"] = +printerMonthlyPrice;
 
             const shop = await Shop.findByIdAndUpdate(req.params.id, update, { new: true })
-                .select("-botToken -customerBotToken -openaiKey").lean();
+                .select("-botToken -customerBotToken").lean();
             if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
 
             res.json({ ok: true, data: { shop, monthlyPrice: calcMonthlyPrice(shop) } });
