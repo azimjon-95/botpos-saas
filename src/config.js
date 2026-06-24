@@ -29,4 +29,8 @@ module.exports = {
     // ─── Admin ogohlantirish boti ────────────────────────────────────────────
     ADMIN_NOTIFICATION_BOT_TOKEN: process.env.ADMIN_NOTIFICATION_BOT_TOKEN || "",
     ADMIN_NOTIFICATION_CHAT_ID:   process.env.ADMIN_NOTIFICATION_CHAT_ID   || "",
+
+    // ─── BACKUP ─────────────────────────────────────────────────────────────
+    // Butun DB backup — har kuni 23:00 shu chat ga yuboriladi
+    BACKUP_CHAT_ID: process.env.BACKUP_CHAT_ID || "",
 };

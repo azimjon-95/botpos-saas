@@ -1,75 +1,83 @@
 // src/services/backupScheduler.js
-// Har do'kon uchun alohida scheduler
-// Kassa yopilganda + har kuni 23:30 da
+// Har kuni 23:00 da bir marta — butun DB backup
+// Kassa yopishda YUBORILMAYDI
 "use strict";
-const schedule = require("node-schedule");
-const Shop     = require("../models/Shop");
-const { sendBackup } = require("./backup");
-const { getBot }     = require("../saas/botManager");
+const schedule         = require("node-schedule");
+const { sendFullBackup } = require("./backup");
+const { getStatus }    = require("../saas/botManager");
+const { getBot }       = require("../saas/botManager");
 
 const TZ = "Asia/Tashkent";
 
-// Bir kunda bir marta yuborildi deb belgilash
-const _sentToday = new Map(); // shopId → "2025-06-24"
+let _lastBackupDate = ""; // "2026-06-24" — bir kunda bir marta
 
 function todayStr() {
     return new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
 }
 
-// ─── BITTA DO'KON BACKUP ─────────────────────────────────────────────────────
-async function backupShop(shopId) {
+// Birinchi aktiv botni topish (backup yuborish uchun)
+function getAnyActiveBot() {
+    const list = getStatus();
+    for (const s of list) {
+        if (s.botActive) {
+            const bot = getBot(s.shopId);
+            if (bot) return bot;
+        }
+    }
+    return null;
+}
+
+// ─── BACKUP YUBORISH ─────────────────────────────────────────────────────────
+async function runBackup(force = false) {
     const today = todayStr();
-    if (_sentToday.get(String(shopId)) === today) {
+
+    if (!force && _lastBackupDate === today) {
+        console.log("[backup] Bugun allaqachon yuborilgan:", today);
         return { ok: false, reason: "Bugun yuborilgan" };
     }
 
-    const bot = getBot(shopId);
-    if (!bot) return { ok: false, reason: "Bot topilmadi" };
+    const bot = getAnyActiveBot();
+    if (!bot) {
+        // Bot yo'q — Telegram API to'g'ridan ishlatish
+        const { BACKUP_CHAT_ID, ADMIN_NOTIFICATION_BOT_TOKEN } = require("../config");
+        if (ADMIN_NOTIFICATION_BOT_TOKEN && BACKUP_CHAT_ID) {
+            const TelegramBot = require("node-telegram-bot-api");
+            const adminBot = new TelegramBot(ADMIN_NOTIFICATION_BOT_TOKEN, { polling: false });
+            const result = await sendFullBackup(adminBot);
+            if (result.ok) _lastBackupDate = today;
+            return result;
+        }
+        console.warn("[backup] Aktiv bot topilmadi");
+        return { ok: false, reason: "Aktiv bot yo'q" };
+    }
 
-    const result = await sendBackup(bot, shopId);
-    if (result.ok) _sentToday.set(String(shopId), today);
+    const result = await sendFullBackup(bot);
+    if (result.ok) _lastBackupDate = today;
     return result;
 }
 
-// ─── KASSA YOPILGANDA (closeCash.js chaqiradi) ───────────────────────────────
-async function triggerOnClose(shopId) {
-    return backupShop(shopId).catch(e =>
-        console.error(`[backup] triggerOnClose xato:`, e.message)
-    );
-}
-
-// ─── HAR KUNI 23:30 DA BARCHA FAOL DO'KONLAR ────────────────────────────────
+// ─── SCHEDULER — HAR KUNI 23:00 ──────────────────────────────────────────────
 function startBackupScheduler() {
-    schedule.scheduleJob({ hour: 23, minute: 30, tz: TZ }, async () => {
-        console.log("[backup] ⏰ 23:30 — backup boshlanmoqda...");
+    schedule.scheduleJob({ hour: 23, minute: 0, tz: TZ }, async () => {
+        console.log("[backup] ⏰ 23:00 — Butun DB backup boshlanmoqda...");
         try {
-            const shops = await Shop.find({
-                isActive: true,
-                $or: [
-                    { backupChatId: { $ne: null } },
-                    { groupChatId:  { $ne: ""  } },
-                ],
-            }).select("_id name").lean();
-
-            console.log(`[backup] ${shops.length} ta do'kon uchun backup`);
-
-            for (const shop of shops) {
-                await backupShop(shop._id).catch(() => {});
-                // Bot spamdan himoya — 2 soniya oraliq
-                await new Promise(r => setTimeout(r, 2000));
+            const result = await runBackup();
+            if (result.ok) {
+                console.log(`[backup] ✅ Yuborildi: ${result.fileName} (${result.total} docs)`);
+            } else {
+                console.warn(`[backup] ⚠️ Yuborilmadi: ${result.reason}`);
             }
         } catch (e) {
-            console.error("[backup] scheduler xato:", e.message);
+            console.error("[backup] ❌ Xato:", e.message);
         }
     });
 
-    console.log("✅ Backup scheduler: har kuni 23:30 (Toshkent)");
+    console.log("✅ Backup scheduler: har kuni 23:00 (Toshkent)");
 }
 
-// ─── QO'LDA BACKUP (admin buyrug'i) ─────────────────────────────────────────
-async function manualBackup(shopId) {
-    _sentToday.delete(String(shopId)); // limitni olib tashlash
-    return backupShop(shopId);
+// ─── QO'LDA BACKUP (admin /backup buyrug'i yoki admin panel) ─────────────────
+async function manualBackup() {
+    return runBackup(true); // force = true (bugun yuborilgan bo'lsa ham)
 }
 
-module.exports = { startBackupScheduler, triggerOnClose, manualBackup };
+module.exports = { startBackupScheduler, manualBackup };

@@ -16,6 +16,8 @@ const mongoose   = require("mongoose");
 const Shop       = require("../models/Shop");
 const AuditLog   = require("../models/AuditLog");
 const { getUsageStats, getSectorList } = require("../services/shopAI");
+const { restoreFromJson, buildFullBackup } = require("../services/backup");
+const { manualBackup } = require("../services/backupScheduler");
 const SuperAdmin = require("../models/SuperAdmin");
 const Worker     = require("../models/Worker");
 const Customer   = require("../models/Customer");
@@ -479,6 +481,86 @@ function adminRoutes() {
 
     r.get("/bots/status", (req, res) => {
         res.json({ ok: true, data: getStatus() });
+    });
+
+    // ─── BACKUP ──────────────────────────────────────────────────────────────
+
+    // POST /api/admin/backup/restore
+    // Multipart/json fayl yuklash → DB ni tiklash
+    r.post("/backup/restore", async (req, res) => {
+        try {
+            const raw = req.body;
+            if (!raw?.data) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "JSON formatida backup fayl kerak. { meta, data } tuzilmasi bo'lishi kerak."
+                });
+            }
+
+            // DB ga tiklash
+            const { results, totalInserted } = await restoreFromJson(raw);
+
+            await AuditLog.create({
+                adminEmail: req.adminEmail,
+                action:     "db.restore",
+                details:    { totalInserted, collections: Object.keys(results) },
+                ip:         req.ip,
+            }).catch(() => {});
+
+            // Natija xulosasi
+            const summary = {};
+            for (const [col, r] of Object.entries(results)) {
+                if (r.skipped) summary[col] = "bo'sh";
+                else if (r.error) summary[col] = `xato: ${r.error}`;
+                else summary[col] = `${r.inserted}/${r.total}`;
+            }
+
+            res.json({
+                ok: true,
+                data: {
+                    totalInserted,
+                    summary,
+                    message: `✅ ${totalInserted} ta hujjat tiklandi`,
+                }
+            });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // POST /api/admin/backup/send — qo'lda backup yuborish
+    r.post("/backup/send", async (req, res) => {
+        try {
+            const result = await manualBackup();
+            res.json({ ok: result.ok, data: result });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // GET /api/admin/backup/preview — DB statistikasi (backup oldidan ko'rish)
+    r.get("/backup/preview", async (req, res) => {
+        try {
+            const Shop     = require("../models/Shop");
+            const Sale     = require("../models/Sale");
+            const Expense  = require("../models/Expense");
+            const Debt     = require("../models/Debt");
+
+            const [shops, sales, expenses, debts] = await Promise.all([
+                Shop.countDocuments(),
+                Sale.countDocuments(),
+                Expense.countDocuments(),
+                Debt.countDocuments({ isClosed: false }),
+            ]);
+
+            res.json({ ok: true, data: {
+                shops, sales, expenses,
+                openDebts: debts,
+                message: `Jami: ${shops} do'kon, ${sales} sotuv, ${expenses} chiqim`,
+            }});
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
     });
 
     // ─── SEKTOR RO'YXATI ──────────────────────────────────────────────────────
