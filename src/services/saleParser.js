@@ -117,7 +117,26 @@ function parseSaleText(text) {
             phone: phone || null,
         });
     }
-    return items.length ? items : null;
+    if (!items.length) return null;
+
+    // Telefon raqamni birinchi topilgandan olish
+    const phone = items.reduce((p, it) => p || it.phone, null);
+
+    // items dan phone olib tashlaymiz (u alohida)
+    const clean = items.map(({ phone: _, ...it }) => it);
+
+    // phone ni result ga biriktirish (doSaveSale uchun)
+    if (phone) clean._phone = phone;
+    return clean;
 }
 
-module.exports = { parseSaleText };
+// Phone ni alohida olish
+function extractPhone(items) {
+    if (!items) return null;
+    for (const it of items) {
+        if (it.phone) return it.phone;
+    }
+    return null;
+}
+
+module.exports = { parseSaleText, extractPhone };

@@ -864,38 +864,119 @@ async function handleAI(bot, chatId, shopId, msg, userMsg, sector, ctx, groupCha
     );
 }
 
-// ─── doSaveSale — sotuvni DB ga saqlash ─────────────────────────────────────
+// ─── doSaveSale — sotuvni DB ga saqlash + chek chiqarish ────────────────────
 async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix = "", phone = null) {
     const { mongoose } = require("../db");
     const Sale    = require("../models/Sale");
     const Debt    = require("../models/Debt");
     const Counter = require("../models/Counter");
     const { formatMoney } = require("../utils/money");
+    const dayjs = require("dayjs");
+
     const seller = { tgId: msg.from?.id, tgName: msg.from?.first_name || "Sotuvchi" };
+
+    // Telefon — saleParser.extractPhone yoki items._phone
+    if (!phone) {
+        phone = items._phone || extractPhone(items) || null;
+    }
+
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
+
+        // Jami hisob
         let total = 0, paidTotal = 0;
-        for (const it of items) { const l = (it.qty || 1) * (it.price || 0); total += l; paidTotal += (it.paid ?? l); }
+        for (const it of items) {
+            const line = (it.qty || 1) * (it.price || 0);
+            total     += line;
+            paidTotal += (it.paid ?? line);
+        }
         paidTotal   = Math.min(paidTotal, total);
         const debtTotal = Math.max(0, total - paidTotal);
-        const oDoc  = await Counter.findOneAndUpdate({ shopId, key: "orderNo" }, { $inc: { value: 1 } }, { new: true, upsert: true, session });
+
+        // OrderNo
+        const oDoc = await Counter.findOneAndUpdate(
+            { shopId, key: "orderNo" },
+            { $inc: { value: 1 } },
+            { new: true, upsert: true, session }
+        );
         const orderNo = `#${String(oDoc.value).padStart(4, "0")}`;
-        const [sale] = await Sale.create([{ shopId, orderNo, seller, phone: phone || null, items, total, paidTotal, debtTotal }], { session });
-        await Counter.findOneAndUpdate({ shopId, key: "balance" }, { $inc: { value: paidTotal } }, { new: true, upsert: true, session });
-        if (debtTotal > 0) await Debt.create([{ shopId, saleId: sale._id, customerPhone: phone || null, totalDebt: debtTotal, remainingDebt: debtTotal, seller }], { session });
+
+        // Sale saqlash
+        const [sale] = await Sale.create([{
+            shopId, orderNo, seller,
+            phone: phone || null,
+            items, total, paidTotal, debtTotal,
+        }], { session });
+
+        // Balans oshirish
+        await Counter.findOneAndUpdate(
+            { shopId, key: "balance" },
+            { $inc: { value: paidTotal } },
+            { new: true, upsert: true, session }
+        );
+
+        // Qarz yaratish
+        if (debtTotal > 0) {
+            await Debt.create([{
+                shopId, saleId: sale._id,
+                customerPhone: phone || null,
+                totalDebt: debtTotal, remainingDebt: debtTotal, seller,
+            }], { session });
+        }
+
         await session.commitTransaction();
 
-        const lines = items.map(it => `• ${it.name} x${it.qty || 1} = ${formatMoney((it.qty || 1) * it.price)}`).join("\n");
-        const reply = [prefix + `✅ <b>${orderNo}</b>`, lines, `💰 <b>${formatMoney(paidTotal)}</b> so'm`,
-            debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(debtTotal)}</b>` : ""].filter(Boolean).join("\n");
-        const kb = { keyboard: [[{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }], [{ text: "📌 Qarzlar" }, { text: "🔒 Kassani yopish" }], [{ text: "📆 Oylik hisobot" }, { text: "📋 Menyu" }]], resize_keyboard: true };
-        await bot.sendMessage(chatId, reply, { parse_mode: "HTML", reply_markup: kb });
-        if (groupChatId) bot.sendMessage(groupChatId, reply, { parse_mode: "HTML" }).catch(() => {});
+        // ─── CHEK XABARI ──────────────────────────────────────────────────
+        const now   = dayjs().tz ? dayjs().tz("Asia/Tashkent") : dayjs();
+        const vaqt  = now.format("DD.MM.YYYY HH:mm");
+        const lines = items.map(it => {
+            const qty  = it.qty || 1;
+            const sum  = qty * it.price;
+            return `  ${it.name}${qty > 1 ? ` x${qty}` : ""}  —  ${formatMoney(sum)} so'm`;
+        }).join("
+");
+
+        // To'lov holati
+        let payStatus;
+        if (debtTotal === 0) {
+            payStatus = `✅ To'liq to'landi`;
+        } else if (paidTotal === 0) {
+            payStatus = `📌 Nasiya — ${formatMoney(debtTotal)} so'm`;
+        } else {
+            payStatus = `💳 Qisman: to'landi ${formatMoney(paidTotal)}, qarz ${formatMoney(debtTotal)} so'm`;
+        }
+
+        // Chek matni
+        const sep = "─".repeat(28);
+        const chek = [
+            prefix,
+            `🧾 <b>CHEK ${orderNo}</b>`,
+            `📅 ${vaqt}`,
+            `👤 ${seller.tgName}`,
+            sep,
+            lines,
+            sep,
+            `💰 Jami:  <b>${formatMoney(total)}</b> so'm`,
+            payStatus,
+            phone ? `📞 Tel: ${phone}` : "",
+        ].filter(Boolean).join("
+");
+
+        // Sotuvchiga
+        await bot.sendMessage(chatId, chek, { parse_mode: "HTML" });
+
+        // Guruhga
+        if (groupChatId) {
+            bot.sendMessage(groupChatId, chek, { parse_mode: "HTML" }).catch(() => {});
+        }
+
     } catch (e) {
         await session.abortTransaction();
-        bot.sendMessage(chatId, `❌ ${e.message}`);
-    } finally { session.endSession(); }
+        bot.sendMessage(chatId, `❌ Sotuv xatosi: ${e.message}`);
+    } finally {
+        session.endSession();
+    }
 }
 
 
