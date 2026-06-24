@@ -7,6 +7,8 @@
 //   #5 — AI sotuv (OpenAI + voice) qo'shildi
 const { mongoose } = require("../db");
 const Product = require("../models/Product");
+const { getCatalog, addProduct } = require("../services/catalogCache");
+const { handleCatalogCallback, handleCatalogText, sendCatalogMenu } = require("./catalogBot");
 const { REDIS_URL, AUTH_TTL_SECONDS } = require("../config");
 
 // Redis — ixtiyoriy (bot ishlaganda kerak)
@@ -324,44 +326,6 @@ FAQAT JSON qaytaring. Hech qanday matn qo'shmang.`,
 }
 
 
-// ─── MAHSULOT KATALOG KEYBOARD ───────────────────────────────────────────────
-async function catalogCategoryKeyboard(shopId) {
-    const cats = await Product.aggregate([
-        { $match: { shopId: new (require("mongoose").Types.ObjectId)(String(shopId)), isActive: true } },
-        { $group: { _id: "$category", emoji: { $first: "$emoji" } } },
-        { $sort: { _id: 1 } },
-    ]);
-
-    if (!cats.length) return null;
-
-    const rows = [];
-    for (let i = 0; i < cats.length; i += 2) {
-        const row = [cats[i], cats[i+1]].filter(Boolean)
-            .map(c => ({ text: `${c.emoji} ${c._id}` }));
-        rows.push(row);
-    }
-    rows.push([{ text: "✏️ Qo'lda yozish" }, { text: "❌ Bekor" }]);
-    return { keyboard: rows, resize_keyboard: true, one_time_keyboard: true };
-}
-
-async function catalogProductKeyboard(shopId, category) {
-    const products = await Product.find({
-        shopId, category, isActive: true
-    }).sort({ sortOrder: 1 }).lean();
-
-    if (!products.length) return null;
-
-    const rows = [];
-    for (let i = 0; i < products.length; i += 2) {
-        const row = [products[i], products[i+1]].filter(Boolean)
-            .map(p => ({ text: `${p.name} — ${p.price.toLocaleString()}` }));
-        rows.push(row);
-    }
-    rows.push([{ text: "◀️ Kategoriyalar" }, { text: "🧺 Savatni ko'rish" }, { text: "❌ Bekor" }]);
-    return { keyboard: rows, resize_keyboard: true, one_time_keyboard: false };
-}
-
-
 // ─── MENYU ───────────────────────────────────────────────────────────────────
 function mainMenu() {
     return {
@@ -483,6 +447,11 @@ function attachHandlers(bot, ctx) {
             );
         }
 
+        // Katalog CRUD callback lar
+        if (data.startsWith("cat:")) {
+            return handleCatalogCallback(bot, cq, shopId, getRedis);
+        }
+
         // Qarz to'liq to'lash
         if (data.startsWith("debt_full:")) {
             const debtId = data.replace("debt_full:", "");
@@ -542,6 +511,10 @@ function attachHandlers(bot, ctx) {
             return bot.sendMessage(chatId, "❌ Noto'g'ri parol. Qayta kiriting.");
         }
 
+        // Katalog CRUD text step tekshiruvi (kategoriya/mahsulot qo'shish jarayoni)
+        const isCatalogStep = await handleCatalogText(bot, msg, shopId, getRedis);
+        if (isCatalogStep) return;
+
         const mode = await getMode(shopId, userId);
 
         // ── BEKOR QILISH ────────────────────────────────────────────────────
@@ -556,6 +529,10 @@ function attachHandlers(bot, ctx) {
             const balance = await getBalance(shopId);
             const reply = [`📋 <b>Menyu</b>`, `🏦 Balans: <b>${formatMoney(balance)}</b> so'm`].join("\n");
             await bot.sendMessage(chatId, reply, { parse_mode: "HTML", reply_markup: mainMenu() });
+            // Katalog boshqarish tugmasi
+            await bot.sendMessage(chatId, "📂 Katalog boshqaruvi:", {
+                reply_markup: { inline_keyboard: [[{ text: "🛍 Katalogni boshqarish", callback_data: "cat:list" }]] }
+            });
             if (webappUrl) {
                 await bot.sendMessage(chatId, "📱 WebApp:", {
                     reply_markup: {
@@ -613,19 +590,25 @@ function attachHandlers(bot, ctx) {
 
         // ── SOTISH REJIMI ────────────────────────────────────────────────────
         if (text === "🧁 Sotish") {
-            // Avval katalog bormi tekshirish
-            const catKb = await catalogCategoryKeyboard(shopId);
-            if (catKb) {
+            // Redis cache dan katalog (tez!)
+            const catalog = await getCatalog(shopId);
+            if (catalog.length) {
                 await setMode(shopId, userId, "catalog_cat");
-                return bot.sendMessage(chatId,
-                    "🛍 Kategoriyani tanlang yoki qo'lda yozing:",
-                    { reply_markup: catKb }
+                const rows = [];
+                for (let i = 0; i < catalog.length; i += 2) {
+                    rows.push([catalog[i], catalog[i+1]].filter(Boolean)
+                        .map(c => ({ text: `${c.emoji} ${c.category}` })));
+                }
+                rows.push([{ text: "✏️ Qo'lda yozish" }, { text: "❌ Bekor" }]);
+                return bot.sendMessage(chatId, "🛍 Kategoriyani tanlang:",
+                    { reply_markup: { keyboard: rows, resize_keyboard: true } }
                 );
             }
-            // Katalog yo'q — oddiy matn rejimi
+            // Katalog yo'q — matn rejimi
             await setMode(shopId, userId, "sale");
             return bot.sendMessage(chatId,
-                "🧁 Sotuvni yozing:\nMasalan: Tort 140000, Pepsi 17000\n\nYoki ovozli xabar yuboring!"
+                "🧁 Sotuvni yozing:\nMasalan: Tort 140000\n\nYoki 📂 <b>Katalog</b> dan mahsulot qo'shing.",
+                { parse_mode: "HTML" }
             );
         }
 
