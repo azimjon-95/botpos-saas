@@ -34,12 +34,21 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         app.use(express.json({ limit: "1mb" }));
 
         // CORS
+        // CORS — ruxsat etilgan originlar
+        const ALLOWED_ORIGINS = [
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "https://botpos.vercel.app",
+            WEBAPP_BASE_URL,
+        ].filter(Boolean);
+
         app.use(cors({
             origin: (origin, cb) => {
-                if (!origin) return cb(null, true);
-                if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) return cb(null, true);
-                if (WEBAPP_BASE_URL && origin.startsWith(WEBAPP_BASE_URL)) return cb(null, true);
-                cb(new Error("CORS BLOCKED"));
+                if (!origin) return cb(null, true);  // Postman, curl
+                const ok = ALLOWED_ORIGINS.some(o => origin.startsWith(o))
+                        || origin.endsWith(".vercel.app");
+                if (ok) return cb(null, true);
+                cb(new Error("CORS BLOCKED: " + origin));
             },
             credentials: true,
         }));
@@ -86,11 +95,12 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         const server = http.createServer(app);
         const io = new Server(server, {
             cors: {
-                origin: [
-                    "http://localhost:3000",
-                    "http://localhost:3001",
-                    WEBAPP_BASE_URL || "",
-                ],
+                origin: (origin, cb) => {
+                    if (!origin) return cb(null, true);
+                    const ok = !origin || origin.endsWith(".vercel.app")
+                            || origin.startsWith("http://localhost");
+                    cb(null, ok);
+                },
                 methods: ["GET", "POST"],
             },
         });

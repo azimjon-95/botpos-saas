@@ -10,7 +10,7 @@ for (const key of required) {
 
 module.exports = {
     MONGO_URI:             process.env.MONGO_URI             || "mongodb://localhost:27017/botpos_saas",
-    REDIS_URL:             process.env.REDIS_URL             || "redis://localhost:6379",
+    REDIS_URL:             process.env.REDIS_URL             || "",  // ixtiyoriy — bot uchun
     MASTER_ENCRYPTION_KEY: process.env.MASTER_ENCRYPTION_KEY,
     PORT:                  Number(process.env.PORT)          || 6060,
     ADMIN_JWT_SECRET:      process.env.ADMIN_JWT_SECRET,

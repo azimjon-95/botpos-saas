@@ -5,9 +5,12 @@
 //   #3 — WebApp URL ikki marta ?shop= xatosi tuzatildi
 //   #4 — callback_query handler qo'shildi (qarz to'lash)
 //   #5 — AI sotuv (OpenAI + voice) qo'shildi
-const Redis   = require("ioredis");
 const { mongoose } = require("../db");
 const { REDIS_URL, AUTH_TTL_SECONDS } = require("../config");
+
+// Redis — ixtiyoriy (bot ishlaganda kerak)
+let Redis = null;
+try { Redis = require("ioredis"); } catch {}
 const Worker   = require("../models/Worker");
 const Debt     = require("../models/Debt");
 const Sale     = require("../models/Sale");
@@ -35,6 +38,7 @@ const CAT_MAP = Object.fromEntries(EXPENSE_CATEGORIES.map(c => [c.key, c]));
 // ─── REDIS ───────────────────────────────────────────────────────────────────
 let _redis = null;
 function getRedis() {
+    if (!Redis || !REDIS_URL) return null;
     if (!_redis) {
         _redis = new Redis(REDIS_URL, {
             maxRetriesPerRequest: 2,
@@ -50,33 +54,34 @@ function modeKey(shopId, userId)  { return `mode:${shopId}:${userId}`; }
 function draftKey(shopId, userId) { return `draft:${shopId}:${userId}`; }
 
 async function isAuthed(shopId, userId) {
-    try { return (await getRedis().get(authKey(shopId, userId))) === "1"; }
+    try { const r = getRedis(); return r ? (await r.get(authKey(shopId, userId))) === "1" : false; }
     catch { return false; }
 }
 async function setAuthed(shopId, userId) {
-    try { await getRedis().set(authKey(shopId, userId), "1", "EX", AUTH_TTL_SECONDS); }
+    try { const r = getRedis(); if(r) await r.set(authKey(shopId, userId), "1", "EX", AUTH_TTL_SECONDS); }
     catch {}
 }
 async function setMode(shopId, userId, mode) {
-    try { await getRedis().set(modeKey(shopId, userId), mode, "EX", AUTH_TTL_SECONDS); }
+    try { const r = getRedis(); if(r) await r.set(modeKey(shopId, userId), mode, "EX", AUTH_TTL_SECONDS); }
     catch {}
 }
 async function getMode(shopId, userId) {
-    try { return (await getRedis().get(modeKey(shopId, userId))) || null; }
+    try { const r = getRedis(); return r ? (await r.get(modeKey(shopId, userId))) || null : null; }
     catch { return null; }
 }
 async function saveDraft(shopId, userId, data) {
-    try { await getRedis().set(draftKey(shopId, userId), JSON.stringify(data), "EX", 600); }
+    try { const r = getRedis(); if(r) await r.set(draftKey(shopId, userId), JSON.stringify(data), "EX", 600); }
     catch {}
 }
 async function getDraft(shopId, userId) {
     try {
-        const raw = await getRedis().get(draftKey(shopId, userId));
+        const r = getRedis(); if(!r) return null;
+        const raw = await r.get(draftKey(shopId, userId));
         return raw ? JSON.parse(raw) : null;
     } catch { return null; }
 }
 async function clearDraft(shopId, userId) {
-    try { await getRedis().del(draftKey(shopId, userId)); }
+    try { const r = getRedis(); if(r) await r.del(draftKey(shopId, userId)); }
     catch {}
 }
 

@@ -92,12 +92,11 @@ async function stopShopBot(shopId) {
 }
 
 async function loadAllShops() {
-    // pending do'konlar yuklanmaydi — token yo'q
+    // TODO: Bot tokenlar qo'shilgandan keyin yoqiladi
+    // Hozircha faqat Admin API va Billing ishlaydi
+    console.log("[botManager] Bot yuklanishi keyinga qoldirildi (tokenlar sozlanmagan)");
     const shops = await Shop.find({ status: "active", isActive: true }).lean();
-    console.log(`[botManager] ${shops.length} ta faol do'kon`);
-    const results = await Promise.allSettled(shops.map(s => startShopBot(s)));
-    const ok  = results.filter(r => r.status === "fulfilled" && r.value).length;
-    console.log(`[botManager] ${ok}/${shops.length} bot ishga tushdi`);
+    console.log(`[botManager] ${shops.length} ta do'kon DB da bor (botlar keyinroq)`);
 }
 
 function getBot(shopId) {
