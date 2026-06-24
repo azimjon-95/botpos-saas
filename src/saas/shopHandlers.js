@@ -899,4 +899,4 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
 }
 
 
-module.exportsmodule.exports = { attachHandlers, getBalance, addBalance };
+module.exports = { attachHandlers, getBalance, addBalance };
