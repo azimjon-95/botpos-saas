@@ -6,7 +6,7 @@ const mongoose = require("mongoose");
 const Shop     = require("../models/Shop");
 const { WEBAPP_BASE_URL } = require("../config");
 const { PLAN_PRICES }     = require("../billing/billingService");
-const { getSectorList }   = require("../services/openaiService");
+const { getSectorList }   = require("../services/shopAI");
 
 // Printer narxlari
 const PRINTER_PRICES = {

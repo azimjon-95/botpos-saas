@@ -401,6 +401,21 @@ async function monthlyReport(shopId) {
 function attachHandlers(bot, ctx) {
     const { shopId, groupChatId, adminTgId, botPassword } = ctx;
     const sector = ctx.shop?.sector || "boshqa";
+
+    // Suhbat tarixi (Redis, 10 xabar)
+    const histKey = (uid) => `hist:${shopId}:${uid}`;
+    async function getHistory(uid) {
+        try { const r = getRedis(); if(!r) return []; const raw = await r.get(histKey(uid)); return raw ? JSON.parse(raw) : []; } catch { return []; }
+    }
+    async function addHistory(uid, role, content) {
+        try {
+            const r = getRedis(); if(!r) return;
+            const h = await getHistory(uid);
+            h.push({ role, content });
+            if (h.length > 10) h.splice(0, h.length - 10);
+            await r.set(histKey(uid), JSON.stringify(h), "EX", 3600);
+        } catch {}
+    }
     // FIX #3: webappUrl dan ?shop= olib tashlandi — u allaqachon URL da bor
     const webappUrl = ctx.webappUrl?.replace(/\?shop=.*$/, "");
     // openaiKey endi markaziy — config.js da OPENAI_API_KEY
@@ -823,12 +838,36 @@ function attachHandlers(bot, ctx) {
 
             // Avval oddiy parse, keyin AI
             let items = parseSaleText(text);
-            // AI parse — faqat oddiy parser topamasa, limit bo'lmasa
+            // shopChat — soha + katalog kontekst bilan
             if (!items) {
-                const lim = await checkLimits(shopId);
-                if (lim.allowed) {
-                    const normalized = await parseSaleAI(text, shopId, sector);
-                    if (normalized) items = parseSaleText(normalized);
+                const rate = await checkRate(shopId);
+                if (rate.ok) {
+                    const { getCatalog } = require("../services/catalogCache");
+                    const catalog    = await getCatalog(shopId);
+                    const balance    = await getBalance(shopId);
+                    const todaySales = await getTodaySales(shopId);
+                    const history    = await getHistory(userId);
+
+                    const aiRaw = await shopChat({ shopId, sector, userMsg: text, catalog, history, balance, todaySales });
+                    await addHistory(userId, "user", text);
+                    if (aiRaw) await addHistory(userId, "assistant", aiRaw);
+
+                    const parsed = parseAIResponse(aiRaw);
+
+                    if (parsed.type === "sale" && parsed.items?.length) {
+                        items = parsed.items;
+                    } else if (parsed.type === "expense" && parsed.amount) {
+                        // Chiqim
+                        const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
+                        try {
+                            await saveExpense({ shopId, spender, title: parsed.description || parsed.categoryKey, amount: parsed.amount, categoryKey: parsed.categoryKey, description: parsed.description || "" });
+                            return bot.sendMessage(chatId, `💸 Chiqim saqlandi: ${formatMoney(parsed.amount)} so'm`, { reply_markup: mainMenu() });
+                        } catch (e) { return bot.sendMessage(chatId, `❌ ${e.message}`); }
+                    } else if (parsed.type === "off_topic") {
+                        return bot.sendMessage(chatId, parsed.reply || "Men faqat do'kon ishlariga yordam beraman.");
+                    } else if (parsed.type === "text" && parsed.text) {
+                        return bot.sendMessage(chatId, parsed.text, { parse_mode: "HTML" });
+                    }
                 }
             }
 

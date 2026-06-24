@@ -15,7 +15,7 @@ const mongoose   = require("mongoose");
 
 const Shop       = require("../models/Shop");
 const AuditLog   = require("../models/AuditLog");
-const { getSystemUsageStats, getSectorList, SECTOR_HINTS } = require("../services/openaiService");
+const { getUsageStats, getSectorList } = require("../services/shopAI");
 const SuperAdmin = require("../models/SuperAdmin");
 const Worker     = require("../models/Worker");
 const Customer   = require("../models/Customer");
@@ -515,7 +515,7 @@ function adminRoutes() {
     // GET /api/admin/ai/usage
     r.get("/ai/usage", async (req, res) => {
         try {
-            const stats = await getSystemUsageStats();
+            const stats = await getUsageStats();
             const USD_TO_UZS = 12800;
             const data = {
                 system: {
