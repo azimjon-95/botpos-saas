@@ -112,15 +112,19 @@ async function sendFullBackup(bot) {
             `📁 <code>${fileName}</code>\n\n` +
             statsLines;
 
-        await bot.sendDocument(
+        const sentMsg = await bot.sendDocument(
             BACKUP_CHAT_ID,
             tmpPath,
             { caption, parse_mode: "HTML" },
             { filename: fileName, contentType: "application/json" }
         );
 
-        console.log(`[backup] ✅ ${fileName} yuborildi (${total} docs, ${shops} do'kon)`);
-        return { ok: true, fileName, total, shops };
+        // message_id — eski faylni o'chirish uchun kerak
+        const messageId = sentMsg?.message_id || null;
+        const chatId    = sentMsg?.chat?.id   || BACKUP_CHAT_ID;
+
+        console.log(`[backup] ✅ ${fileName} yuborildi (${total} docs, ${shops} do'kon, msg_id: ${messageId})`);
+        return { ok: true, fileName, total, shops, messageId, chatId };
 
     } catch (e) {
         console.error("[backup] sendDocument xato:", e.message);
