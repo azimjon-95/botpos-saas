@@ -6,6 +6,7 @@
 //   #4 — callback_query handler qo'shildi (qarz to'lash)
 //   #5 — AI sotuv (OpenAI + voice) qo'shildi
 const { mongoose } = require("../db");
+const Product = require("../models/Product");
 const { REDIS_URL, AUTH_TTL_SECONDS } = require("../config");
 
 // Redis — ixtiyoriy (bot ishlaganda kerak)
@@ -52,6 +53,7 @@ function getRedis() {
 function authKey(shopId, userId)  { return `auth:${shopId}:${userId}`; }
 function modeKey(shopId, userId)  { return `mode:${shopId}:${userId}`; }
 function draftKey(shopId, userId) { return `draft:${shopId}:${userId}`; }
+function cartKey(shopId, userId)  { return `cart:${shopId}:${userId}`; }  // Savat
 
 async function isAuthed(shopId, userId) {
     try { const r = getRedis(); return r ? (await r.get(authKey(shopId, userId))) === "1" : false; }
@@ -84,6 +86,38 @@ async function clearDraft(shopId, userId) {
     try { const r = getRedis(); if(r) await r.del(draftKey(shopId, userId)); }
     catch {}
 }
+
+
+// ─── SAVAT (CART) ────────────────────────────────────────────────────────────
+async function getCart(shopId, userId) {
+    try {
+        const r = getRedis();
+        if (!r) return [];
+        const raw = await r.get(cartKey(shopId, userId));
+        return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+}
+async function addToCart(shopId, userId, item) {
+    try {
+        const r = getRedis();
+        if (!r) return;
+        const cart = await getCart(shopId, userId);
+        const ex = cart.find(c => c.name === item.name);
+        if (ex) { ex.qty += 1; ex.paid = ex.qty * ex.price; }
+        else cart.push({ name: item.name, qty: 1, price: item.price, paid: item.price });
+        await r.set(cartKey(shopId, userId), JSON.stringify(cart), "EX", 3600);
+        return cart;
+    } catch { return []; }
+}
+async function clearCart(shopId, userId) {
+    try { const r = getRedis(); if(r) await r.del(cartKey(shopId, userId)); } catch {}
+}
+function cartSummary(cart) {
+    const total = cart.reduce((a, c) => a + c.paid, 0);
+    const lines = cart.map(c => `• ${c.name} x${c.qty} = ${formatMoney(c.paid)}`).join("\n");
+    return { total, lines };
+}
+
 
 // ─── PAROL TEKSHIRISH ────────────────────────────────────────────────────────
 async function checkPassword(shopId, userId, text, botPassword) {
@@ -288,6 +322,45 @@ FAQAT JSON qaytaring. Hech qanday matn qo'shmang.`,
         return null;
     }
 }
+
+
+// ─── MAHSULOT KATALOG KEYBOARD ───────────────────────────────────────────────
+async function catalogCategoryKeyboard(shopId) {
+    const cats = await Product.aggregate([
+        { $match: { shopId: new (require("mongoose").Types.ObjectId)(String(shopId)), isActive: true } },
+        { $group: { _id: "$category", emoji: { $first: "$emoji" } } },
+        { $sort: { _id: 1 } },
+    ]);
+
+    if (!cats.length) return null;
+
+    const rows = [];
+    for (let i = 0; i < cats.length; i += 2) {
+        const row = [cats[i], cats[i+1]].filter(Boolean)
+            .map(c => ({ text: `${c.emoji} ${c._id}` }));
+        rows.push(row);
+    }
+    rows.push([{ text: "✏️ Qo'lda yozish" }, { text: "❌ Bekor" }]);
+    return { keyboard: rows, resize_keyboard: true, one_time_keyboard: true };
+}
+
+async function catalogProductKeyboard(shopId, category) {
+    const products = await Product.find({
+        shopId, category, isActive: true
+    }).sort({ sortOrder: 1 }).lean();
+
+    if (!products.length) return null;
+
+    const rows = [];
+    for (let i = 0; i < products.length; i += 2) {
+        const row = [products[i], products[i+1]].filter(Boolean)
+            .map(p => ({ text: `${p.name} — ${p.price.toLocaleString()}` }));
+        rows.push(row);
+    }
+    rows.push([{ text: "◀️ Kategoriyalar" }, { text: "🧺 Savatni ko'rish" }, { text: "❌ Bekor" }]);
+    return { keyboard: rows, resize_keyboard: true, one_time_keyboard: false };
+}
+
 
 // ─── MENYU ───────────────────────────────────────────────────────────────────
 function mainMenu() {
@@ -540,8 +613,20 @@ function attachHandlers(bot, ctx) {
 
         // ── SOTISH REJIMI ────────────────────────────────────────────────────
         if (text === "🧁 Sotish") {
+            // Avval katalog bormi tekshirish
+            const catKb = await catalogCategoryKeyboard(shopId);
+            if (catKb) {
+                await setMode(shopId, userId, "catalog_cat");
+                return bot.sendMessage(chatId,
+                    "🛍 Kategoriyani tanlang yoki qo'lda yozing:",
+                    { reply_markup: catKb }
+                );
+            }
+            // Katalog yo'q — oddiy matn rejimi
             await setMode(shopId, userId, "sale");
-            return bot.sendMessage(chatId, "🧁 Sotuvni yozing:\nMasalan: Tort 140000, Pepsi 17000\n\nYoki ovozli xabar yuboring!");
+            return bot.sendMessage(chatId,
+                "🧁 Sotuvni yozing:\nMasalan: Tort 140000, Pepsi 17000\n\nYoki ovozli xabar yuboring!"
+            );
         }
 
         // ── CHIQIM REJIMI (FIX #1 — handler qo'shildi) ───────────────────────
