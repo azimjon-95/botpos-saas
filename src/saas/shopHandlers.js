@@ -744,184 +744,159 @@ function attachHandlers(bot, ctx) {
             return;
         }
 
-        // ── SOTUV: MATN YOKI OVOZ ────────────────────────────────────────────
+        // ── SOTUV: MATN VA OVOZ ─────────────────────────────────────────────
+        // QOIDA: AI faqat sotuv/chiqim parse uchun.
+        // "Sher yoz", "ob-havo" kabi savollarga javob BERILMAYDI.
         if (mode === "sale" || !mode) {
-            // Ovozli xabar
-            // ── OVOZLI XABAR — Telegram STT (BEPUL) + smart parse ───────
+
+            // ── OVOZ ────────────────────────────────────────────────────────
             if (msg.voice) {
-                // Telegram voice xabarini matn ga aylantirish
-                // Telegram Bot API: voice → getFile → Whisper URL
-                // LEKIN: voice.file_path → to'g'ri Whisper bilan download qilamiz
-                // Telegram o'zi STT qilmaydi — biz bot.getFile + Whisper fallback ishlatamiz
-                // STRATEGIYA: avval regex, keyin AI (99% tejash)
-
+                const rate = await checkRate(shopId);
+                if (!rate.ok) return bot.sendMessage(chatId, rate.reason);
                 bot.sendChatAction(chatId, "typing").catch(() => {});
-
                 let sttText = null;
-
-                // Ovoz faylini yuklab, Whisper bilan matn ga aylantiramiz
-                // (faqat bu bir yo'l — Telegram o'z STT API sini bot larga bermaydi)
                 try {
-                    const fileInfo = await bot.getFile(msg.voice.file_id);
-                    const { OPENAI_API_KEY } = require('../config');
-
-                    if (OPENAI_API_KEY) {
-                        // Limit tekshiruvi
-                        const lim = await checkLimits(shopId);
-                        if (!lim.allowed) {
-                            const errMsg = lim.reason === "limit_reached"
-                                ? `⚠️ Bu oy AI limiti to'ldi. Yozma kiriting.`
-                                : `⏳ ${lim.waitSec||2} soniya kuting.`;
-                            return bot.sendMessage(chatId, errMsg);
-                        }
-
-                        // Whisper bilan STT (faqat 1 marta — parse va STT)
-                        const botToken = require('../utils/encrypt').decrypt(ctx.shop?.botToken || "");
-                        const fileUrl  = `https://api.telegram.org/file/bot${botToken}/${fileInfo.file_path}`;
-                        const audioResp = await fetch(fileUrl);
-                        if (audioResp.ok) {
-                            const audioBuffer = Buffer.from(await audioResp.arrayBuffer());
-                            const { whisperFallback } = require('../services/openaiService');
-                            sttText = await whisperFallback(audioBuffer, shopId, sector);
-                        }
+                    const { decrypt } = require("../utils/encrypt");
+                    const botToken  = decrypt(ctx.shop?.botToken || "");
+                    const fileInfo  = await bot.getFile(msg.voice.file_id);
+                    const fileUrl   = `https://api.telegram.org/file/bot${botToken}/${fileInfo.file_path}`;
+                    const audioResp = await fetch(fileUrl);
+                    if (audioResp.ok) {
+                        sttText = await stt(Buffer.from(await audioResp.arrayBuffer()), shopId, sector);
                     }
-                } catch (e) {
-                    console.error("[voice]", e.message);
-                }
+                } catch (e) { console.error("[voice]", e.message); }
 
                 if (!sttText) {
                     return bot.sendMessage(chatId,
-                        "🎤 Ovoz tushunilmadi.\n✏️ Yozma yuboring: <code>Tort 140000, Pepsi 18000</code>",
-                        { parse_mode: "HTML" }
-                    );
+                        "🎤 Ovoz tushunilmadi. Qayta yoki yozma yuboring.");
                 }
-
-                // Katalog mahsulotlari (token tejash)
-                const { getCatalog } = require("../services/catalogCache");
-                const catalogGroups = await getCatalog(shopId);
-                const catalogItems  = catalogGroups.flatMap(g => g.items);
-
-                // Smart parse: regex → katalog → AI
-                const result = await processVoiceSale(sttText, shopId, sector, catalogItems);
-
-                if (!result.items?.length) {
-                    return bot.sendMessage(chatId,
-                        `🎤 Eshitildi: "<i>${sttText}</i>"\n\n` +
-                        `❓ Sotuv topilmadi.\n` +
-                        `Misol: "<b>Tort 140000, Pepsi 18000</b>"`,
-                        { parse_mode: "HTML" }
-                    );
-                }
-
-                // Sotuv saqlash
-                const seller = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
-                try {
-                    const saveResult = await saveSale({ shopId, seller, items: result.items });
-                    const lines = result.items.map(it =>
-                        `• ${it.name} x${it.qty||1} = ${formatMoney((it.qty||1)*it.price)}`
-                    ).join("\n");
-                    const reply = [
-                        `🎤✅ <b>${saveResult.orderNo}</b>${result.aiUsed?" (AI)":""}`,
-                        `📝 <i>${sttText}</i>`,
-                        lines,
-                        `💰 <b>${formatMoney(saveResult.paidTotal)}</b> so'm`,
-                        saveResult.debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(saveResult.debtTotal)}</b>` : "",
-                    ].filter(Boolean).join("\n");
-                    await bot.sendMessage(chatId, reply, { parse_mode:"HTML", reply_markup:mainMenu() });
-                    if (groupChatId) await bot.sendMessage(groupChatId, reply, { parse_mode:"HTML" }).catch(()=>{});
-                } catch (e) {
-                    await bot.sendMessage(chatId, `❌ ${e.message}`, { reply_markup:mainMenu() });
-                }
-                return;
+                return handleAI(bot, chatId, shopId, msg, sttText, sector, ctx, groupChatId, true);
             }
+
+            // ── MATN ────────────────────────────────────────────────────────
             if (!text) return;
 
-            // Avval oddiy parse, keyin AI
-            let items = parseSaleText(text);
-            // shopChat — soha + katalog kontekst bilan
-            if (!items) {
-                const rate = await checkRate(shopId);
-                if (rate.ok) {
-                    const { getCatalog } = require("../services/catalogCache");
-                    const catalog    = await getCatalog(shopId);
-                    const balance    = await getBalance(shopId);
-                    const todaySales = await getTodaySales(shopId);
-                    const history    = await getHistory(userId);
-
-                    const aiRaw = await shopChat({ shopId, sector, userMsg: text, catalog, history, balance, todaySales });
-                    await addHistory(userId, "user", text);
-                    if (aiRaw) await addHistory(userId, "assistant", aiRaw);
-
-                    const parsed = parseAIResponse(aiRaw);
-
-                    if (parsed.type === "sale" && parsed.items?.length) {
-                        items = parsed.items;
-                    } else if (parsed.type === "expense" && parsed.amount) {
-                        // Chiqim
-                        const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
-                        try {
-                            await saveExpense({ shopId, spender, title: parsed.description || parsed.categoryKey, amount: parsed.amount, categoryKey: parsed.categoryKey, description: parsed.description || "" });
-                            return bot.sendMessage(chatId, `💸 Chiqim saqlandi: ${formatMoney(parsed.amount)} so'm`, { reply_markup: mainMenu() });
-                        } catch (e) { return bot.sendMessage(chatId, `❌ ${e.message}`); }
-                    } else if (parsed.type === "off_topic") {
-                        return bot.sendMessage(chatId, parsed.reply || "Men faqat do'kon ishlariga yordam beraman.");
-                    } else if (parsed.type === "text" && parsed.text) {
-                        return bot.sendMessage(chatId, parsed.text, { parse_mode: "HTML" });
-                    }
-                }
+            // 1. Tez regex parser (0 token)
+            const quickItems = parseSaleText(text);
+            if (quickItems?.length) {
+                return doSaveSale(bot, chatId, shopId, msg, quickItems, groupChatId);
             }
 
-            if (items && items.length > 0) {
-                const seller = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
-                try {
-                    const result = await saveSale({ shopId, seller, items });
-                    const reply = [
-                        `✅ Sotuv saqlandi! <b>${result.orderNo}</b>`,
-                        items.map(it => `• ${it.name} x${it.qty || 1} = ${formatMoney((it.qty||1)*it.price)}`).join("\n"),
-                        `💰 To'landi: <b>${formatMoney(result.paidTotal)}</b> so'm`,
-                        result.debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(result.debtTotal)}</b> so'm` : "",
-                    ].filter(Boolean).join("\n");
-                    await bot.sendMessage(chatId, reply, { parse_mode: "HTML" });
-                    if (groupChatId) await bot.sendMessage(groupChatId, reply, { parse_mode: "HTML" }).catch(() => {});
-                } catch (e) {
-                    await bot.sendMessage(chatId, `❌ Sotuv xatosi: ${e.message}`);
-                }
-                return;
-            }
-
-            // Chiqim bo'lishi mumkin (AI bilan)
-            if (OPENAI_API_KEY) {
-                const lim2 = await checkLimits(shopId);
-            const exp  = lim2.allowed ? await parseExpenseAI(text, shopId) : null;
-                if (exp?.amount && exp?.categoryKey) {
-                    const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
-                    try {
-                        await saveExpense({
-                            shopId, spender,
-                            title: exp.description || exp.categoryKey,
-                            amount: exp.amount,
-                            categoryKey: exp.categoryKey,
-                            description: exp.description || "",
-                        });
-                        const cat = CAT_MAP[exp.categoryKey];
-                        return bot.sendMessage(chatId,
-                            `✅ Chiqim (AI): ${cat?.emoji || ""} ${formatMoney(exp.amount)} so'm`,
-                            { parse_mode: "HTML" }
-                        );
-                    } catch (e) {
-                        return bot.sendMessage(chatId, `❌ ${e.message}`);
-                    }
-                }
-            }
-
-            return bot.sendMessage(chatId,
-                "❓ Format noto'g'ri.\nSotuv: <code>Tort 140000</code>\nChiqim: 💸 tugmasini bosing",
-                { parse_mode: "HTML" }
-            );
+            // 2. shopChat — soha + katalog kontekst bilan
+            return handleAI(bot, chatId, shopId, msg, text, sector, ctx, groupChatId, false);
         }
+    });
+
     });
 
     console.log(`[shopHandlers] ✅ Handler ulandi: ${ctx.shop?.name || shopId}`);
 }
 
-module.exports = { attachHandlers, getBalance, addBalance };
+
+// ─── handleAI — shopChat orqali sotuv/chiqim/savol ─────────────────────────
+async function handleAI(bot, chatId, shopId, msg, userMsg, sector, ctx, groupChatId, fromVoice) {
+    const { formatMoney } = require("../utils/money");
+    const { getCatalog }  = require("../services/catalogCache");
+    const Counter = require("../models/Counter");
+    const { shopChat, parseAIResponse, getTodaySales } = require("../services/shopAI");
+
+    bot.sendChatAction(chatId, "typing").catch(() => {});
+
+    const catalog    = await getCatalog(shopId);
+    const balanceDoc = await Counter.findOne({ shopId, key: "balance" }).lean();
+    const balance    = Number(balanceDoc?.value || 0);
+    const todaySales = await getTodaySales(shopId);
+
+    const aiRaw  = await shopChat({ shopId, sector, userMsg, catalog, history: [], balance, todaySales });
+    const parsed = parseAIResponse(aiRaw);
+
+    // ── SOTUV ──────────────────────────────────────────────────────────────
+    if (parsed.type === "sale" && parsed.items?.length) {
+        const prefix = fromVoice ? `🎤 <i>${userMsg}</i>\n` : "";
+        return doSaveSale(bot, chatId, shopId, msg, parsed.items, groupChatId, prefix, parsed.phone);
+    }
+
+    // ── CHIQIM ─────────────────────────────────────────────────────────────
+    if (parsed.type === "expense" && parsed.amount) {
+        const { mongoose } = require("../db");
+        const Counter = require("../models/Counter");
+        const Expense = require("../models/Expense");
+        const spender = { tgId: msg.from?.id, tgName: msg.from?.first_name || "Sotuvchi" };
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+            const bal = await Counter.findOne({ shopId, key: "balance" }, null, { session }).lean();
+            if ((bal?.value || 0) < parsed.amount) {
+                await session.abortTransaction();
+                return bot.sendMessage(chatId, "❌ Balans yetarli emas.");
+            }
+            const oDoc = await Counter.findOneAndUpdate({ shopId, key: "orderNo" }, { $inc: { value: 1 } }, { new: true, upsert: true, session });
+            const orderNo = `#${String(oDoc.value).padStart(4, "0")}`;
+            await Expense.create([{ shopId, orderNo, spender, title: parsed.description || parsed.categoryKey, amount: parsed.amount, categoryKey: parsed.categoryKey, description: parsed.description || "" }], { session });
+            await Counter.findOneAndUpdate({ shopId, key: "balance" }, { $inc: { value: -parsed.amount } }, { session });
+            await session.commitTransaction();
+            return bot.sendMessage(chatId, `💸 Chiqim: <b>${formatMoney(parsed.amount)}</b> so'm (${parsed.categoryKey})`, { parse_mode: "HTML" });
+        } catch (e) {
+            await session.abortTransaction();
+            return bot.sendMessage(chatId, `❌ ${e.message}`);
+        } finally { session.endSession(); }
+    }
+
+    // ── OFF_TOPIC — sotuv bilan bog'liq emas ─────────────────────────────
+    if (parsed.type === "off_topic") {
+        return bot.sendMessage(chatId,
+            "❌ Bu savolga javob bera olmayman.\n\n" +
+            "Men faqat <b>sotuv va chiqim</b> bilan ishlayman.\n" +
+            "Misol: <code>Tort 140000, Pepsi 18000</code>",
+            { parse_mode: "HTML" }
+        );
+    }
+
+    // ── SAVOL — balans, narx, bugun sotilgan ─────────────────────────────
+    if (parsed.type === "text" && parsed.text) {
+        return bot.sendMessage(chatId, parsed.text, { parse_mode: "HTML" });
+    }
+
+    // Tushunilmadi
+    return bot.sendMessage(chatId,
+        "❓ Tushunilmadi.\nMisol: <code>Tort 140000, Pepsi 18000</code>",
+        { parse_mode: "HTML" }
+    );
+}
+
+// ─── doSaveSale — sotuvni DB ga saqlash ─────────────────────────────────────
+async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix = "", phone = null) {
+    const { mongoose } = require("../db");
+    const Sale    = require("../models/Sale");
+    const Debt    = require("../models/Debt");
+    const Counter = require("../models/Counter");
+    const { formatMoney } = require("../utils/money");
+    const seller = { tgId: msg.from?.id, tgName: msg.from?.first_name || "Sotuvchi" };
+    const session = await mongoose.startSession();
+    try {
+        session.startTransaction();
+        let total = 0, paidTotal = 0;
+        for (const it of items) { const l = (it.qty || 1) * (it.price || 0); total += l; paidTotal += (it.paid ?? l); }
+        paidTotal   = Math.min(paidTotal, total);
+        const debtTotal = Math.max(0, total - paidTotal);
+        const oDoc  = await Counter.findOneAndUpdate({ shopId, key: "orderNo" }, { $inc: { value: 1 } }, { new: true, upsert: true, session });
+        const orderNo = `#${String(oDoc.value).padStart(4, "0")}`;
+        const [sale] = await Sale.create([{ shopId, orderNo, seller, phone: phone || null, items, total, paidTotal, debtTotal }], { session });
+        await Counter.findOneAndUpdate({ shopId, key: "balance" }, { $inc: { value: paidTotal } }, { new: true, upsert: true, session });
+        if (debtTotal > 0) await Debt.create([{ shopId, saleId: sale._id, customerPhone: phone || null, totalDebt: debtTotal, remainingDebt: debtTotal, seller }], { session });
+        await session.commitTransaction();
+
+        const lines = items.map(it => `• ${it.name} x${it.qty || 1} = ${formatMoney((it.qty || 1) * it.price)}`).join("\n");
+        const reply = [prefix + `✅ <b>${orderNo}</b>`, lines, `💰 <b>${formatMoney(paidTotal)}</b> so'm`,
+            debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(debtTotal)}</b>` : ""].filter(Boolean).join("\n");
+        const kb = { keyboard: [[{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }], [{ text: "📌 Qarzlar" }, { text: "🔒 Kassani yopish" }], [{ text: "📆 Oylik hisobot" }, { text: "📋 Menyu" }]], resize_keyboard: true };
+        await bot.sendMessage(chatId, reply, { parse_mode: "HTML", reply_markup: kb });
+        if (groupChatId) bot.sendMessage(groupChatId, reply, { parse_mode: "HTML" }).catch(() => {});
+    } catch (e) {
+        await session.abortTransaction();
+        bot.sendMessage(chatId, `❌ ${e.message}`);
+    } finally { session.endSession(); }
+}
+
+
+module.exportsmodule.exports = { attachHandlers, getBalance, addBalance };
