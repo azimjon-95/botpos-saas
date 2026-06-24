@@ -15,7 +15,7 @@ const mongoose   = require("mongoose");
 
 const Shop       = require("../models/Shop");
 const AuditLog   = require("../models/AuditLog");
-const { getSystemUsageStats } = require("../services/openaiService");
+const { getSystemUsageStats, getSectorList, SECTOR_HINTS } = require("../services/openaiService");
 const SuperAdmin = require("../models/SuperAdmin");
 const Worker     = require("../models/Worker");
 const Customer   = require("../models/Customer");
@@ -167,6 +167,7 @@ function adminRoutes() {
                 bakerTgId, adminTgId, minQrPaid, botPassword,
                 plan, notes, statsChatId, backupChatId,
                 onboardingNotes, selectedPlan, calculatedPrice, hasPrinter, printerType,
+                sector, monthlyTokenLimit,
             } = req.body || {};
 
             if (!name || !ownerName || !phone || !botToken || !groupChatId)
@@ -224,7 +225,12 @@ function adminRoutes() {
         try {
             const allowed = ["name","ownerName","phone","address","groupChatId",
                 "customerBotUsername","bakerTgId","adminTgId","minQrPaid",
-                "botPassword","plan","notes","statsChatId","backupChatId"];
+                "botPassword","plan","notes","statsChatId","backupChatId","sector"];
+            // aiConfig alohida
+            if (req.body.monthlyTokenLimit !== undefined)
+                update["aiConfig.monthlyTokenLimit"] = Number(req.body.monthlyTokenLimit);
+            if (req.body.voiceSaleOnly !== undefined)
+                update["aiConfig.voiceSaleOnly"] = !!req.body.voiceSaleOnly;
             const update = {};
             for (const key of allowed) {
                 if (req.body[key] !== undefined) update[key] = req.body[key];
@@ -473,6 +479,36 @@ function adminRoutes() {
 
     r.get("/bots/status", (req, res) => {
         res.json({ ok: true, data: getStatus() });
+    });
+
+    // ─── SEKTOR RO'YXATI ──────────────────────────────────────────────────────
+    r.get("/sectors", (req, res) => {
+        res.json({ ok: true, data: getSectorList() });
+    });
+
+    // ─── DO'KON AI SOZLAMALAR ────────────────────────────────────────────────
+    r.put("/shops/:id/ai-config", async (req, res) => {
+        try {
+            const { monthlyTokenLimit, voiceSaleOnly, skipAiIfCatalog, minIntervalSec } = req.body;
+            const update = {};
+            if (monthlyTokenLimit !== undefined) update["aiConfig.monthlyTokenLimit"] = Number(monthlyTokenLimit);
+            if (voiceSaleOnly     !== undefined) update["aiConfig.voiceSaleOnly"]     = !!voiceSaleOnly;
+            if (skipAiIfCatalog   !== undefined) update["aiConfig.skipAiIfCatalog"]   = !!skipAiIfCatalog;
+            if (minIntervalSec    !== undefined) update["aiConfig.minIntervalSec"]     = Number(minIntervalSec);
+
+            const shop = await Shop.findByIdAndUpdate(req.params.id, update, { new: true })
+                .select("name sector aiConfig aiUsage").lean();
+            if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
+
+            res.json({ ok: true, data: {
+                name:       shop.name,
+                sector:     shop.sector,
+                aiConfig:   shop.aiConfig,
+                thisMonth:  shop.aiUsage?.thisMonthTokens || 0,
+                limit:      shop.aiConfig?.monthlyTokenLimit || 50000,
+                remaining:  Math.max(0, (shop.aiConfig?.monthlyTokenLimit || 50000) - (shop.aiUsage?.thisMonthTokens || 0)),
+            }});
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
     });
 
     // ─── AI TOKEN SARFI ────────────────────────────────────────────────────

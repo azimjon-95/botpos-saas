@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const Shop     = require("../models/Shop");
 const { WEBAPP_BASE_URL } = require("../config");
 const { PLAN_PRICES }     = require("../billing/billingService");
+const { getSectorList }   = require("../services/openaiService");
 
 // Printer narxlari
 const PRINTER_PRICES = {
@@ -33,6 +34,7 @@ function onboardingRoutes() {
 
         const n = Math.max(1, Math.min(12, Number(months) || 1));
 
+        const sectors = getSectorList();
         res.json({ ok: true, data: {
             plan,
             planName:    { starter:"Starter", pro:"Pro", business:"Business" }[plan],
@@ -70,7 +72,7 @@ function onboardingRoutes() {
         try {
             const {
                 name, ownerName, phone, address,
-                plan, hasPrinter, printerType,
+                plan, hasPrinter, printerType, sector,
                 calculatedPrice, notes,
             } = req.body;
 
@@ -100,6 +102,7 @@ function onboardingRoutes() {
                 phone:     phone.trim(),
                 address:   address?.trim() || "",
                 plan:      plan || "starter",
+                sector:    sector || "boshqa",
                 status:    "pending",
                 isActive:  false,
                 webappUrl: `${WEBAPP_BASE_URL}?shop=${_id}`,
@@ -170,6 +173,11 @@ function onboardingRoutes() {
 
     // ─── TARIF NARXLARI (public) ─────────────────────────────────────────────
     // GET /api/onboarding/plans
+    // ─── SOHALAR RO'YXATI (public) ──────────────────────────────────────────
+    r.get("/sectors", (req, res) => {
+        res.json({ ok: true, data: getSectorList() });
+    });
+
     r.get("/plans", (req, res) => {
         res.json({ ok: true, data: {
             plans: [

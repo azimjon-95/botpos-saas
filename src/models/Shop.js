@@ -39,6 +39,44 @@ const ShopSchema = new mongoose.Schema({
     minQrPaid:   { type: Number, default: 70000 },
     botPassword:  { type: String, default: "1234" },
 
+
+    // ─── DO'KON SOHASI VA AI SOZLAMALAR ─────────────────────────────────────
+    sector: {
+        // Asosiy soha (do'kon yaratilganda tanlanadi)
+        type: String,
+        enum: [
+            "tort_va_shirinlik",  // 🎂 Tort va shirinlik do'koni
+            "kafe_restoran",      // ☕ Kafe / Restoran
+            "supermarket",        // 🛒 Supermarket / Oziq-ovqat
+            "kiyim",              // 👗 Kiyim-kechak
+            "elektronika",        // 📱 Elektronika
+            "kosmetika",          // 💄 Kosmetika / Gozellik
+            "dori_darmon",        // 💊 Dorixona
+            "qurilish",           // 🏗 Qurilish materiallari
+            "sport",              // ⚽ Sport mahsulotlari
+            "boshqa",             // 📦 Boshqa
+        ],
+        default: "boshqa",
+    },
+
+    aiConfig: {
+        // Ovozli sotuv: faqat sotuv parse (boshqa savollarga javob yo'q)
+        voiceSaleOnly:   { type: Boolean, default: true },
+
+        // Token tejash: agar katalogda mahsulot bo'lsa — AI ishlatmaslik
+        skipAiIfCatalog: { type: Boolean, default: true },
+
+        // Oylik token limit (0 = cheksiz)
+        monthlyTokenLimit: { type: Number, default: 50000 },
+
+        // So'rovlar orasidagi minimal interval (soniyada)
+        // Spamdan himoya
+        minIntervalSec:  { type: Number, default: 2 },
+
+        // Oxirgi AI so'rov vaqti (rate limit uchun)
+        lastAiRequestAt: { type: Date, default: null },
+    },
+
     // ─── TARIF ──────────────────────────────────────────────────────────────
     plan: {
         type: String,

@@ -400,6 +400,7 @@ async function monthlyReport(shopId) {
 // ─── HANDLER ULASH ───────────────────────────────────────────────────────────
 function attachHandlers(bot, ctx) {
     const { shopId, groupChatId, adminTgId, botPassword } = ctx;
+    const sector = ctx.shop?.sector || "boshqa";
     // FIX #3: webappUrl dan ?shop= olib tashlandi — u allaqachon URL da bor
     const webappUrl = ctx.webappUrl?.replace(/\?shop=.*$/, "");
     // openaiKey endi markaziy — config.js da OPENAI_API_KEY
@@ -731,19 +732,95 @@ function attachHandlers(bot, ctx) {
         // ── SOTUV: MATN YOKI OVOZ ────────────────────────────────────────────
         if (mode === "sale" || !mode) {
             // Ovozli xabar
-            const { OPENAI_API_KEY } = require('../config');
-            if (msg.voice && OPENAI_API_KEY) {
-                await bot.sendMessage(chatId, "🎤 Ovoz qabul qilindi, tahlil qilinmoqda...");
+            // ── OVOZLI XABAR — faqat sotuv parse ────────────────────────
+            if (msg.voice) {
+                const { OPENAI_API_KEY } = require('../config');
+                if (!OPENAI_API_KEY) {
+                    return bot.sendMessage(chatId,
+                        "🎤 Ovoz xizmat qo'llanilmagan. Yozma kiritng.");
+                }
+
+                // Limit tekshiruv
+                const lim = await checkLimits(shopId);
+                if (!lim.allowed) {
+                    const msg2 = lim.reason === "limit_reached"
+                        ? `⚠️ Bu oy AI limiti to'ldi (${lim.used?.toLocaleString()} token). Qo'lda yozing.`
+                        : `⏳ Tez-tez yuborilmoqda. ${lim.waitSec || 2} soniya kuting.`;
+                    return bot.sendMessage(chatId, msg2);
+                }
+
+                // Fayl yuklab olish
+                const typing = bot.sendChatAction(chatId, "typing").catch(()=>{});
+                let audioBuffer;
+                try {
+                    const fileId   = msg.voice.file_id;
+                    const fileInfo = await bot.getFile(fileId);
+                    const fileUrl  = `https://api.telegram.org/file/bot${ctx.shop?.botToken
+                        ? require('../utils/encrypt').decrypt(ctx.shop.botToken)
+                        : ""}/${fileInfo.file_path}`;
+                    const resp = await fetch(fileUrl);
+                    if (!resp.ok) throw new Error("Fayl yuklanmadi");
+                    audioBuffer = Buffer.from(await resp.arrayBuffer());
+                } catch (e) {
+                    return bot.sendMessage(chatId, "❌ Ovoz faylini yuklab bo'lmadi. Qayta yuboring.");
+                }
+
+                // Katalog mahsulotlari (token tejash uchun)
+                const { getCatalog } = require("../services/catalogCache");
+                const catalogGroups = await getCatalog(shopId);
+                const catalogItems  = catalogGroups.flatMap(g => g.items);
+
+                // STT → parse
+                const result = await processVoiceSale(audioBuffer, shopId, sector, catalogItems);
+
+                if (!result.text) {
+                    return bot.sendMessage(chatId,
+                        "🎤 Ovoz tushunilmadi. Qayta yoki yozma yuboring.");
+                }
+
+                if (!result.items?.length) {
+                    // Sotuv ma'lumoti topilmadi — faqat sotuv uchun ishlaydi
+                    return bot.sendMessage(chatId,
+                        `🎤 Eshitildi: "<i>${result.text}</i>"\n\n` +
+                        `❓ Sotuv ma'lumoti topilmadi.\n` +
+                        `Misol: "<b>Tort 140000, Pepsi 18000</b>"`,
+                        { parse_mode: "HTML" }
+                    );
+                }
+
+                // Sotuv saqlash
+                const seller = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
+                try {
+                    const saveResult = await saveSale({ shopId, seller, items: result.items });
+                    const lines = result.items.map(it =>
+                        `• ${it.name} x${it.qty||1} = ${formatMoney((it.qty||1)*it.price)}`
+                    ).join("\n");
+                    const aiNote = result.aiUsed ? " (AI)" : "";
+                    const reply = [
+                        `🎤✅ Ovozdan sotuv${aiNote}! <b>${saveResult.orderNo}</b>`,
+                        `📝 "<i>${result.text}</i>"`,
+                        lines,
+                        `💰 <b>${formatMoney(saveResult.paidTotal)}</b> so'm`,
+                        saveResult.debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(saveResult.debtTotal)}</b>` : "",
+                    ].filter(Boolean).join("\n");
+                    await bot.sendMessage(chatId, reply, { parse_mode:"HTML", reply_markup:mainMenu() });
+                    if (groupChatId) await bot.sendMessage(groupChatId, reply, {parse_mode:"HTML"}).catch(()=>{});
+                } catch (e) {
+                    await bot.sendMessage(chatId, `❌ Sotuv xatosi: ${e.message}`);
+                }
                 return;
-                // Ovoz STT → aiParseSale qilinadi (keyingi versiyada)
             }
             if (!text) return;
 
             // Avval oddiy parse, keyin AI
             let items = parseSaleText(text);
-            if (!items && OPENAI_API_KEY) {
-                await bot.sendMessage(chatId, "⏳ AI tahlil qilmoqda...");
-                items = await parseSaleAI(text, shopId).then(t => t ? parseSaleText(t) : null);
+            // AI parse — faqat oddiy parser topamasa, limit bo'lmasa
+            if (!items) {
+                const lim = await checkLimits(shopId);
+                if (lim.allowed) {
+                    const normalized = await parseSaleAI(text, shopId, sector);
+                    if (normalized) items = parseSaleText(normalized);
+                }
             }
 
             if (items && items.length > 0) {
@@ -766,7 +843,8 @@ function attachHandlers(bot, ctx) {
 
             // Chiqim bo'lishi mumkin (AI bilan)
             if (OPENAI_API_KEY) {
-                const exp = await parseExpenseAI(text, shopId);
+                const lim2 = await checkLimits(shopId);
+            const exp  = lim2.allowed ? await parseExpenseAI(text, shopId) : null;
                 if (exp?.amount && exp?.categoryKey) {
                     const spender = { tgId: userId, tgName: msg.from?.first_name || "Sotuvchi" };
                     try {
