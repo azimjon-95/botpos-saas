@@ -70,22 +70,6 @@ function getAnyBot() {
     return null;
 }
 
-// ─── ESKI FAYLNI O'CHIRISH ────────────────────────────────────────────────────
-async function deleteOldBackup(bot) {
-    const { lastBackupMsgId, lastBackupChatId } = _state;
-    if (!lastBackupMsgId || !lastBackupChatId) return;
-    try {
-        await bot.deleteMessage(lastBackupChatId, lastBackupMsgId);
-        console.log(`[backup] 🗑 Eski fayl o'chirildi (msg_id: ${lastBackupMsgId})`);
-        _state.lastBackupMsgId  = null;
-        _state.lastBackupChatId = null;
-        await saveState();
-    } catch (e) {
-        // 48 soatdan eski xabarni o'chirib bo'lmaydi (Telegram cheklov)
-        console.warn(`[backup] Eski faylni o'chirib bo'lmadi: ${e.message}`);
-    }
-}
-
 // ─── BACKUP YUBORISH ──────────────────────────────────────────────────────────
 async function runBackup(force = false) {
     const today = todayStr();
@@ -99,20 +83,23 @@ async function runBackup(force = false) {
         return { ok: false, reason: "Bot topilmadi. ADMIN_NOTIFICATION_BOT_TOKEN qo'ying." };
     }
 
-    // 1. Eski faylni o'chiramiz
-    await deleteOldBackup(bot);
-
-    // 2. Yangi backup yuboramiz
+    // 1. Yangi backup yuboramiz
     const result = await sendFullBackup(bot);
 
     if (result.ok) {
-        // 3. Yangi message_id saqlaymiz
+        // 2. 3 soniya kutamiz
+        await new Promise(r => setTimeout(r, 3000));
+
+        // 3. Eski faylni o'chiramiz
+        await deleteOldBackup(bot);
+
+        // 4. Yangi message_id saqlaymiz
         _state.lastBackupDate   = today;
         _state.lastBackupMsgId  = result.messageId  || null;
         _state.lastBackupChatId = result.chatId     || null;
         _state.lastBackupOk     = true;
         await saveState();
-        console.log(`[backup] ✅ Yuborildi: ${result.fileName} | msg_id: ${result.messageId}`);
+        console.log(`[backup] ✅ ${result.fileName} yuborildi → 3s → eski o'chirildi`);
     } else {
         _state.lastBackupOk = false;
         await saveState();
