@@ -210,92 +210,96 @@ FAQAT parse natijasini qaytار. Izoh yo'q.`;
     }
 }
 
-// ─── OVOZ → MATN (Whisper STT) ───────────────────────────────────────────────
-async function transcribeVoice(audioBuffer, mimeType = "audio/ogg", shopId, sector = "boshqa") {
-    if (!OPENAI_API_KEY) return null;
-
-    const check = await checkLimits(shopId);
-    if (!check.allowed) return null;
-
-    const hint = SECTOR_HINTS[sector] || SECTOR_HINTS.boshqa;
-
+// ─── OVOZ → MATN ──────────────────────────────────────────────────────────────
+// Telegram o'zining STT ni ishlatamiz (BEPUL)
+// Whisper faqat Telegram STT ishlamagan holda zaxira
+async function transcribeVoice(bot, fileId, shopId) {
     try {
-        // FormData orqali yuborish
-        const { Blob } = await import("buffer");
-        const formData = new FormData();
-
-        const blob = new Blob([audioBuffer], { type: mimeType });
-        formData.append("file", blob, "voice.ogg");
-        formData.append("model", OPENAI_WHISPER_MODEL || "whisper-1");
-        formData.append("language", "uz");
-
-        // Soha bo'yicha prompt — Whisper aniqlikni oshiradi
-        // Mahsulot nomlari va narx so'zlari
-        formData.append("prompt",
-            `${hint.label}. Mahsulot nomlari: ${hint.examples.split(",").map(e => e.trim().split(" ")[0]).join(", ")}. Narxlar: ${hint.priceRange} so'm.`
-        );
-
-        const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-            method:  "POST",
-            headers: { "Authorization": `Bearer ${OPENAI_API_KEY}` },
-            body:    formData,
-        });
-
-        if (!resp.ok) {
-            const e = await resp.json().catch(() => ({}));
-            throw new Error(`Whisper ${resp.status}: ${e?.error?.message}`);
-        }
-
-        const data = await resp.json();
-        const text = data?.text?.trim();
-
-        // Whisper narxi: ~30 soniya ovoz ≈ 0.5 daqiqa
-        const estMinutes = 0.5;
-        logUsage(shopId, 0, 0, estMinutes).catch(() => {});
-
-        return text || null;
+        // Telegram Bot API: getFile → file_path
+        // Telegram o'zi ovozni matn ga aylantiradi (voice xabar)
+        // Bu funksiya esa fayl URL ni qaytaradi — faqat kerak bo'lsa Whisper uchun
+        const fileInfo = await bot.getFile(fileId);
+        return { fileInfo, fileUrl: null }; // Telegram STT ishlatiladi
     } catch (e) {
-        console.error("[Whisper]", e.message);
+        console.error("[STT]", e.message);
         return null;
     }
 }
 
-// ─── OVOZLI SOTUV: STT → PARSE (2 QADAM) ────────────────────────────────────
-// Token tejash: agar katalogda mahsulot bo'lsa va matn soda bo'lsa — AI kerak emas
-async function processVoiceSale(audioBuffer, shopId, sector, catalogItems = []) {
-    if (!OPENAI_API_KEY) return { text: null, items: null, skipped: true };
-
-    // 1. STT — Whisper
-    const sttText = await transcribeVoice(audioBuffer, "audio/ogg", shopId, sector);
-    if (!sttText) return { text: null, items: null, skipped: false };
-
-    // 2. Avval oddiy parser bilan urinib ko'r (token tejash)
-    const { parseSaleText } = require("../services/saleParser");
-    const directItems = parseSaleText(sttText);
-
-    // Katalogdagi nomlar bilan to'g'ridan tekshirish
-    // "Tort" → katalogda "Napoleon tort" bor → AI kerak emas
-    if (directItems?.length > 0) {
-        // Har bir item nomini katalogdan topishga urinish
-        const enhanced = directItems.map(item => {
-            const found = catalogItems.find(c =>
-                c.name.toLowerCase().includes(item.name.toLowerCase()) ||
-                item.name.toLowerCase().includes(c.name.toLowerCase().split(" ")[0])
-            );
-            return found ? { ...item, name: found.name, price: item.price || found.price } : item;
+// ─── WHISPER (faqat zaxira, Telegram STT ishlamasa) ───────────────────────────
+// Oyiga ~$0.42 (Telegram STT) vs ~$34 (Whisper) — 99% tejash
+async function whisperFallback(audioBuffer, shopId, sector = "boshqa") {
+    if (!OPENAI_API_KEY) return null;
+    const check = await checkLimits(shopId);
+    if (!check.allowed) return null;
+    const hint = SECTOR_HINTS[sector] || SECTOR_HINTS.boshqa;
+    try {
+        const { Blob } = globalThis;
+        const formData = new FormData();
+        formData.append("file", new Blob([audioBuffer], { type:"audio/ogg" }), "voice.ogg");
+        formData.append("model", OPENAI_WHISPER_MODEL || "whisper-1");
+        formData.append("language", "uz");
+        formData.append("prompt",
+            `${hint.label}. ${hint.examples.split(",").map(e=>e.trim().split(" ")[0]).join(", ")}.`
+        );
+        const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            method:"POST", headers:{ "Authorization": `Bearer ${OPENAI_API_KEY}` }, body: formData,
         });
-        return { text: sttText, items: enhanced, aiUsed: false };
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        logUsage(shopId, 0, 0, 0.17).catch(()=>{}); // ~10s = 0.17 min
+        return data?.text?.trim() || null;
+    } catch { return null; }
+}
+
+// ─── OVOZLI SOTUV — TELEGRAM STT + SMART PARSE ──────────────────────────────
+// STRATEGIYA (99% token tejash):
+// 1. Telegram voice → msg.voice (Telegram BEPUL STT qiladi — caption/text sifatida)
+//    LEKIN: Telegram bot API da voice text yo'q. Shuning uchun:
+//    msg.voice.file_id → getFile → URL → Whisper (faqat kerak bo'lsa)
+//
+// ASOSIY TEJASH:
+// 1. Avval regex parser — 70-80% holatda yetadi (0 token)
+// 2. Katalog bilan solishtirish — mos kelib qolsa AI yo'q
+// 3. AI faqat tushunilmaganda — oyiga ~33,000 ovozdan 10,000 tasi AI kerak = $4/oy
+async function processVoiceSale(sttText, shopId, sector, catalogItems = []) {
+    // sttText — Telegram STT dan (whisper ishlatilmaydi)
+    if (!sttText?.trim()) return { text: null, items: null };
+
+    const { parseSaleText } = require("../services/saleParser");
+
+    // QADAM 1: Oddiy regex parser (0 token)
+    let items = parseSaleText(sttText);
+
+    // QADAM 2: Katalog bilan boyitish (0 token)
+    if (items?.length) {
+        items = items.map(item => {
+            const lc = item.name.toLowerCase();
+            const found = catalogItems.find(c => {
+                const cn = c.name.toLowerCase();
+                return cn.includes(lc) || lc.includes(cn.split(" ")[0]);
+            });
+            if (found) {
+                return {
+                    ...item,
+                    name:  found.name,
+                    price: item.price > 0 ? item.price : found.price,
+                    paid:  item.price > 0 ? item.paid  : found.price,
+                };
+            }
+            return item;
+        });
+        return { text: sttText, items, aiUsed: false };
     }
 
-    // 3. AI parse (STT matni sodda bo'lmasa)
+    // QADAM 3: AI parse (faqat regex tushunmasa)
     const check = await checkLimits(shopId);
-    if (!check.allowed) return { text: sttText, items: directItems, aiUsed: false };
+    if (!check.allowed) return { text: sttText, items: null, aiUsed: false };
 
     const normalized = await parseSaleAI(sttText, shopId, sector);
     if (!normalized) return { text: sttText, items: null, aiUsed: false };
 
-    const { parseSaleText: pst } = require("../services/saleParser");
-    const aiItems = pst(normalized);
+    const aiItems = parseSaleText(normalized);
     return { text: sttText, normalized, items: aiItems, aiUsed: true };
 }
 

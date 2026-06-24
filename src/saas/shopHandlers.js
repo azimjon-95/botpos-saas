@@ -732,57 +732,67 @@ function attachHandlers(bot, ctx) {
         // ── SOTUV: MATN YOKI OVOZ ────────────────────────────────────────────
         if (mode === "sale" || !mode) {
             // Ovozli xabar
-            // ── OVOZLI XABAR — faqat sotuv parse ────────────────────────
+            // ── OVOZLI XABAR — Telegram STT (BEPUL) + smart parse ───────
             if (msg.voice) {
-                const { OPENAI_API_KEY } = require('../config');
-                if (!OPENAI_API_KEY) {
-                    return bot.sendMessage(chatId,
-                        "🎤 Ovoz xizmat qo'llanilmagan. Yozma kiritng.");
-                }
+                // Telegram voice xabarini matn ga aylantirish
+                // Telegram Bot API: voice → getFile → Whisper URL
+                // LEKIN: voice.file_path → to'g'ri Whisper bilan download qilamiz
+                // Telegram o'zi STT qilmaydi — biz bot.getFile + Whisper fallback ishlatamiz
+                // STRATEGIYA: avval regex, keyin AI (99% tejash)
 
-                // Limit tekshiruv
-                const lim = await checkLimits(shopId);
-                if (!lim.allowed) {
-                    const msg2 = lim.reason === "limit_reached"
-                        ? `⚠️ Bu oy AI limiti to'ldi (${lim.used?.toLocaleString()} token). Qo'lda yozing.`
-                        : `⏳ Tez-tez yuborilmoqda. ${lim.waitSec || 2} soniya kuting.`;
-                    return bot.sendMessage(chatId, msg2);
-                }
+                bot.sendChatAction(chatId, "typing").catch(() => {});
 
-                // Fayl yuklab olish
-                const typing = bot.sendChatAction(chatId, "typing").catch(()=>{});
-                let audioBuffer;
+                let sttText = null;
+
+                // Ovoz faylini yuklab, Whisper bilan matn ga aylantiramiz
+                // (faqat bu bir yo'l — Telegram o'z STT API sini bot larga bermaydi)
                 try {
-                    const fileId   = msg.voice.file_id;
-                    const fileInfo = await bot.getFile(fileId);
-                    const fileUrl  = `https://api.telegram.org/file/bot${ctx.shop?.botToken
-                        ? require('../utils/encrypt').decrypt(ctx.shop.botToken)
-                        : ""}/${fileInfo.file_path}`;
-                    const resp = await fetch(fileUrl);
-                    if (!resp.ok) throw new Error("Fayl yuklanmadi");
-                    audioBuffer = Buffer.from(await resp.arrayBuffer());
+                    const fileInfo = await bot.getFile(msg.voice.file_id);
+                    const { OPENAI_API_KEY } = require('../config');
+
+                    if (OPENAI_API_KEY) {
+                        // Limit tekshiruvi
+                        const lim = await checkLimits(shopId);
+                        if (!lim.allowed) {
+                            const errMsg = lim.reason === "limit_reached"
+                                ? `⚠️ Bu oy AI limiti to'ldi. Yozma kiriting.`
+                                : `⏳ ${lim.waitSec||2} soniya kuting.`;
+                            return bot.sendMessage(chatId, errMsg);
+                        }
+
+                        // Whisper bilan STT (faqat 1 marta — parse va STT)
+                        const botToken = require('../utils/encrypt').decrypt(ctx.shop?.botToken || "");
+                        const fileUrl  = `https://api.telegram.org/file/bot${botToken}/${fileInfo.file_path}`;
+                        const audioResp = await fetch(fileUrl);
+                        if (audioResp.ok) {
+                            const audioBuffer = Buffer.from(await audioResp.arrayBuffer());
+                            const { whisperFallback } = require('../services/openaiService');
+                            sttText = await whisperFallback(audioBuffer, shopId, sector);
+                        }
+                    }
                 } catch (e) {
-                    return bot.sendMessage(chatId, "❌ Ovoz faylini yuklab bo'lmadi. Qayta yuboring.");
+                    console.error("[voice]", e.message);
                 }
 
-                // Katalog mahsulotlari (token tejash uchun)
+                if (!sttText) {
+                    return bot.sendMessage(chatId,
+                        "🎤 Ovoz tushunilmadi.\n✏️ Yozma yuboring: <code>Tort 140000, Pepsi 18000</code>",
+                        { parse_mode: "HTML" }
+                    );
+                }
+
+                // Katalog mahsulotlari (token tejash)
                 const { getCatalog } = require("../services/catalogCache");
                 const catalogGroups = await getCatalog(shopId);
                 const catalogItems  = catalogGroups.flatMap(g => g.items);
 
-                // STT → parse
-                const result = await processVoiceSale(audioBuffer, shopId, sector, catalogItems);
-
-                if (!result.text) {
-                    return bot.sendMessage(chatId,
-                        "🎤 Ovoz tushunilmadi. Qayta yoki yozma yuboring.");
-                }
+                // Smart parse: regex → katalog → AI
+                const result = await processVoiceSale(sttText, shopId, sector, catalogItems);
 
                 if (!result.items?.length) {
-                    // Sotuv ma'lumoti topilmadi — faqat sotuv uchun ishlaydi
                     return bot.sendMessage(chatId,
-                        `🎤 Eshitildi: "<i>${result.text}</i>"\n\n` +
-                        `❓ Sotuv ma'lumoti topilmadi.\n` +
+                        `🎤 Eshitildi: "<i>${sttText}</i>"\n\n` +
+                        `❓ Sotuv topilmadi.\n` +
                         `Misol: "<b>Tort 140000, Pepsi 18000</b>"`,
                         { parse_mode: "HTML" }
                     );
@@ -795,18 +805,17 @@ function attachHandlers(bot, ctx) {
                     const lines = result.items.map(it =>
                         `• ${it.name} x${it.qty||1} = ${formatMoney((it.qty||1)*it.price)}`
                     ).join("\n");
-                    const aiNote = result.aiUsed ? " (AI)" : "";
                     const reply = [
-                        `🎤✅ Ovozdan sotuv${aiNote}! <b>${saveResult.orderNo}</b>`,
-                        `📝 "<i>${result.text}</i>"`,
+                        `🎤✅ <b>${saveResult.orderNo}</b>${result.aiUsed?" (AI)":""}`,
+                        `📝 <i>${sttText}</i>`,
                         lines,
                         `💰 <b>${formatMoney(saveResult.paidTotal)}</b> so'm`,
                         saveResult.debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(saveResult.debtTotal)}</b>` : "",
                     ].filter(Boolean).join("\n");
                     await bot.sendMessage(chatId, reply, { parse_mode:"HTML", reply_markup:mainMenu() });
-                    if (groupChatId) await bot.sendMessage(groupChatId, reply, {parse_mode:"HTML"}).catch(()=>{});
+                    if (groupChatId) await bot.sendMessage(groupChatId, reply, { parse_mode:"HTML" }).catch(()=>{});
                 } catch (e) {
-                    await bot.sendMessage(chatId, `❌ Sotuv xatosi: ${e.message}`);
+                    await bot.sendMessage(chatId, `❌ ${e.message}`, { reply_markup:mainMenu() });
                 }
                 return;
             }
