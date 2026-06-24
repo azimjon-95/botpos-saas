@@ -12,7 +12,7 @@ module.exports = {
     MONGO_URI:             process.env.MONGO_URI             || "mongodb://localhost:27017/botpos_saas",
     REDIS_URL:             process.env.REDIS_URL             || "",  // ixtiyoriy — bot uchun
     MASTER_ENCRYPTION_KEY: process.env.MASTER_ENCRYPTION_KEY,
-    PORT:                  Number(process.env.PORT)          || 6060,
+    PORT:                  Number(process.env.PORT)          || 10000,
     ADMIN_JWT_SECRET:      process.env.ADMIN_JWT_SECRET,
     ADMIN_EMAIL:           process.env.ADMIN_EMAIL           || "admin@botpos.uz",
     TZ:                    process.env.TZ                    || "Asia/Tashkent",
