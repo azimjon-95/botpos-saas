@@ -421,6 +421,25 @@ function attachHandlers(bot, ctx) {
     // openaiKey endi markaziy — config.js da OPENAI_API_KEY
 
     // ── /start ──────────────────────────────────────────────────────────────
+    // /backup — qo'lda backup (faqat admin)
+    bot.onText(/\/backup/, async (msg) => {
+        const uid    = msg.from?.id;
+        const chatId = msg.chat.id;
+        if (!uid) return;
+        if (!(await isAuthed(shopId, uid))) return;
+        if (adminTgId && uid !== adminTgId) {
+            return bot.sendMessage(chatId, "❌ Faqat admin backup qila oladi.");
+        }
+        await bot.sendMessage(chatId, "⏳ Backup tayyorlanmoqda...");
+        const { manualBackup } = require("../services/backupScheduler");
+        const r = await manualBackup(shopId);
+        if (r?.ok) {
+            await bot.sendMessage(chatId, `✅ Backup yuborildi: ${r.fileName}`);
+        } else {
+            await bot.sendMessage(chatId, `❌ Backup xato: ${r?.reason || "noma'lum"}`);
+        }
+    });
+
     bot.onText(/\/start/, async (msg) => {
         const userId = msg.from?.id;
         const chatId = msg.chat.id;
@@ -582,7 +601,7 @@ function attachHandlers(bot, ctx) {
         // ── KASSA YOPISH ─────────────────────────────────────────────────────
         if (text === "🔒 Kassani yopish") {
             const { closeCash } = require("../services/closeCash");
-            const s = await closeCash(shopId);
+            const s = await closeCash(shopId);  // backup trigger ichida
             const report = [
                 `📊 <b>Kassa yopildi</b>`,
                 `💰 Tushum: <b>${formatMoney(s.saleSum)}</b> so'm`,

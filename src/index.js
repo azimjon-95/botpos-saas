@@ -16,6 +16,7 @@ const { billingRoutes }    = require("./routes/billing");
 const { onboardingRoutes } = require("./routes/onboarding");
 const { productRoutes }    = require("./routes/products");
 const { startBillingScheduler } = require("./billing/billingNotifier");
+const { startBackupScheduler }  = require("./services/backupScheduler");
 const { adminRoutes }  = require("./routes/admin");
 const { PORT, TZ, WEBAPP_BASE_URL, API_RATE_LIMIT } = require("./config");
 
@@ -129,6 +130,9 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
 
         // 5. Billing scheduler (har kuni 10:00)
         startBillingScheduler();
+
+        // 6. Backup scheduler (har kuni 23:30 + kassa yopilganda)
+        startBackupScheduler();
 
         console.log("✅ BOT·POS SaaS tayyor!");
 
