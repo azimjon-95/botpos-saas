@@ -9,7 +9,7 @@ const { mongoose } = require("../db");
 const Product = require("../models/Product");
 const { getCatalog, addProduct } = require("../services/catalogCache");
 const { handleCatalogCallback, handleCatalogText, sendCatalogMenu } = require("./catalogBot");
-const { REDIS_URL, AUTH_TTL_SECONDS } = require("../config");
+const { REDIS_URL, AUTH_TTL_SECONDS, OWNER_AUTH_TTL } = require("../config");
 
 // Redis — ixtiyoriy (bot ishlaganda kerak)
 let Redis = null;
@@ -52,10 +52,11 @@ function getRedis() {
     return _redis;
 }
 
-function authKey(shopId, userId)  { return `auth:${shopId}:${userId}`; }
-function modeKey(shopId, userId)  { return `mode:${shopId}:${userId}`; }
-function draftKey(shopId, userId) { return `draft:${shopId}:${userId}`; }
-function cartKey(shopId, userId)  { return `cart:${shopId}:${userId}`; }  // Savat
+function authKey(shopId, userId)      { return `auth:${shopId}:${userId}`; }
+function ownerAuthKey(shopId, userId)  { return `owner_auth:${shopId}:${userId}`; } // Egasi (3 kun)
+function modeKey(shopId, userId)       { return `mode:${shopId}:${userId}`; }
+function draftKey(shopId, userId)      { return `draft:${shopId}:${userId}`; }
+function cartKey(shopId, userId)       { return `cart:${shopId}:${userId}`; }
 
 async function isAuthed(shopId, userId) {
     try { const r = getRedis(); return r ? (await r.get(authKey(shopId, userId))) === "1" : false; }
@@ -122,10 +123,25 @@ function cartSummary(cart) {
 
 
 // ─── PAROL TEKSHIRISH ────────────────────────────────────────────────────────
-async function checkPassword(shopId, userId, text, botPassword) {
+async function checkPassword(shopId, userId, text, botPassword, adminTgId) {
+    // Do'kon egasi — parol tekshiruvi (3 kunda bir)
+    if (adminTgId && userId === adminTgId) {
+        return String(text || "").trim() === String(botPassword || "1234").trim();
+    }
+    // Xodim — parol tekshiruvi
     const worker = await Worker.findOne({ shopId, tgId: userId, isActive: true }).lean();
     if (worker) return true;
     return String(text || "").trim() === String(botPassword || "1234").trim();
+}
+
+// Foydalanuvchi bot ga kirishi mumkinmi?
+// Faqat do'kon egasi va xodimlar kirishi mumkin
+async function canAccessBot(shopId, userId, adminTgId) {
+    // Egasi har doim kira oladi
+    if (adminTgId && userId === adminTgId) return true;
+    // Xodimmi?
+    const worker = await Worker.findOne({ shopId, tgId: userId, isActive: true }).lean();
+    return !!worker;
 }
 
 // ─── BALANS (atomik $inc — race condition yo'q) ──────────────────────────────
@@ -444,6 +460,32 @@ function attachHandlers(bot, ctx) {
         const userId = msg.from?.id;
         const chatId = msg.chat.id;
         if (!userId) return;
+
+        // Faqat do'kon egasi va xodimlar kirishi mumkin
+        const canAccess = await canAccessBot(shopId, userId, adminTgId);
+        if (!canAccess) {
+            return bot.sendMessage(chatId,
+                "⛔ Kechirasiz, bu bot faqat do'kon xodimlari uchun.\n\n" +
+                "Mahsulotlarni ko'rish va buyurtma berish uchun do'kon saytiga kiring.",
+                { reply_markup: { remove_keyboard: true } }
+            );
+        }
+
+        // Egasi bo'lsa — 3 kunlik sessiya tekshiruvi
+        const isOwner = adminTgId && userId === adminTgId;
+        if (isOwner) {
+            if (await isOwnerAuthed(shopId, userId)) {
+                return bot.sendMessage(chatId, "🏠 Asosiy menyu:", { reply_markup: mainMenu(hasWebApp) });
+            }
+            return bot.sendMessage(chatId,
+                "🔒 <b>Do'kon egasi kirishi</b>\n\n" +
+                "Parolni kiriting:\n" +
+                "<i>(Har 3 kunda bir marta so'raladi)</i>",
+                { parse_mode: "HTML", reply_markup: { remove_keyboard: true } }
+            );
+        }
+
+        // Xodim
         if (await isAuthed(shopId, userId)) {
             return bot.sendMessage(chatId, "🏠 Asosiy menyu:", { reply_markup: mainMenu(hasWebApp) });
         }
@@ -755,7 +797,7 @@ function attachHandlers(bot, ctx) {
             }
 
             if (draft.step === "groupId") {
-                // 3. Guruh ID olindi → sayt yaratamiz + guruhga PIN
+                // 3. Guruh ID olindi → BOT ADMIN TEKSHIRUVI → sayt yaratamiz
                 let orderChatId = text.trim();
 
                 // "Hozirgi guruh: -100..." → ID ni ajratib olamiz
@@ -770,6 +812,43 @@ function attachHandlers(bot, ctx) {
                 if (!orderChatId.match(/^-?[0-9]+$/)) {
                     return bot.sendMessage(chatId,
                         "❌ Noto'g'ri format. Faqat raqam kiriting:\n<code>-1001234567890</code>",
+                        { parse_mode: "HTML" }
+                    );
+                }
+
+                // ── BOT ADMIN TEKSHIRUVI ──────────────────────────────────
+                await bot.sendMessage(chatId, "⏳ Guruhda bot huquqlari tekshirilmoqda...");
+                let botIsAdmin = false;
+                let adminError = "";
+                try {
+                    const botInfo = await bot.getMe();
+                    const member  = await bot.getChatMember(orderChatId, botInfo.id);
+                    const status  = member?.status;
+
+                    if (status === "administrator" || status === "creator") {
+                        // Pin ruxsatini tekshirish
+                        const canPin = member?.can_pin_messages !== false;
+                        if (!canPin) {
+                            adminError = "Bot admin, lekin "Pin messages" ruxsati yo'q.";
+                        } else {
+                            botIsAdmin = true;
+                        }
+                    } else if (status === "member") {
+                        adminError = "Bot guruhda admin emas.";
+                    } else {
+                        adminError = "Bot guruhda topilmadi. Avval botni guruhga qo'shing.";
+                    }
+                } catch (e) {
+                    adminError = `Guruhga ulanib bo'lmadi: ${e.message}`;
+                }
+
+                if (!botIsAdmin) {
+                    return bot.sendMessage(chatId,
+                        `⚠️ <b>Diqqat!</b>\n\n❌ ${adminError}\n\n` +
+                        `✅ Qadamlar:\n` +
+                        `1. Botni guruhga admin qiling\n` +
+                        `2. "Pin messages" ruxsatini bering\n` +
+                        `3. Keyin guruh ID ni qayta yuboring`,
                         { parse_mode: "HTML" }
                     );
                 }

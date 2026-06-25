@@ -174,6 +174,8 @@ function adminRoutes() {
 
             if (!name || !ownerName || !phone || !botToken || !groupChatId)
                 return res.status(400).json({ ok: false, error: "Majburiy: name, ownerName, phone, botToken, groupChatId" });
+            if (!botPassword || botPassword.length < 4)
+                return res.status(400).json({ ok: false, error: "botPassword kamida 4 ta belgi bo'lishi kerak" });
 
             // FIX #5 — webappUrl ikki marta DB call yo'q: _id ni oldin yaratamiz
             const _id = new mongoose.Types.ObjectId();
