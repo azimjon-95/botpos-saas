@@ -8,7 +8,7 @@ const {
     confirmPayment, setGrace, removeGrace,
     setBlocked, getPaymentHistory,
     getBillingStats, calcMonthlyPrice,
-    PLAN_PRICES, getBillingStatus,
+    PLANS, ADDONS, getBillingStatus,
 } = require("../billing/billingService");
 const AuditLog = require("../models/AuditLog");
 
@@ -85,7 +85,7 @@ function billingRoutes() {
             const update = {};
             if (plan && ["starter","pro","business"].includes(plan)) {
                 update.plan = plan;
-                update["billing.monthlyPrice"] = PLAN_PRICES[plan];
+                update["billing.monthlyPrice"] = PLANS[plan]?.price;
             }
             if (hasPrinter !== undefined) update["billing.hasPrinter"] = hasPrinter;
             if (printerType) update["billing.printerType"] = printerType;
@@ -177,15 +177,13 @@ function billingRoutes() {
     // ─── TARIF NARXLARI ──────────────────────────────────────────────────────
     // GET /api/admin/billing/plans
     r.get("/plans", (req, res) => {
+        const { PLANS, ADDONS } = require("../billing/billingService");
         res.json({ ok: true, data: {
-            plans: [
-                { key:"starter",  name:"Starter",  price: PLAN_PRICES.starter,  features:["1 bot","Sotuv+chiqim","Hisobot"] },
-                { key:"pro",      name:"Pro",       price: PLAN_PRICES.pro,      features:["Cashback","AI sotuv","WebApp dashboard"] },
-                { key:"business", name:"Business",  price: PLAN_PRICES.business, features:["Chek printer","Priority support","Barcha funksiyalar"] },
-            ],
+            plans:  Object.values(PLANS),
+            addons: Object.values(ADDONS),
             printer: {
-                bought:  { oneTime: 700_000, label: "Bir martalik sotib olish" },
-                rental:  { monthly: 50_000,  label: "Oylik ijara" },
+                bought: { oneTime: 700_000, label: "Bir martalik sotib olish" },
+                rental: { monthly: 50_000,  label: "Oylik ijara" },
             },
         }});
     });

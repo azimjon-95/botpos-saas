@@ -16,7 +16,7 @@ const mongoose   = require("mongoose");
 const Shop       = require("../models/Shop");
 const AuditLog   = require("../models/AuditLog");
 const { getUsageStats, getSectorList } = require("../services/shopAI");
-const { canUseWebApp, webAppMonthlyFee, WEBAPP_PRICES } = require("../billing/billingService");
+const { canUse, canUseWebApp, webAppMonthlyFee, PLANS, ADDONS, enableAddon, disableAddon, calcMonthlyPrice } = require("../billing/billingService");
 const { restoreFromJson, buildFullBackup } = require("../services/backup");
 const { manualBackup } = require("../services/backupScheduler");
 const SuperAdmin = require("../models/SuperAdmin");
@@ -177,8 +177,8 @@ function adminRoutes() {
                 return res.status(400).json({ ok: false, error: "Majburiy: name, ownerName, phone, botToken, groupChatId" });
             if (!botPassword || String(botPassword).length < 4)
                 return res.status(400).json({ ok: false, error: "botPassword kamida 4 ta belgi bo'lishi kerak" });
-            // customerBotToken ixtiyoriy — keyinroq ham qo'shish mumkin
-            // Lekin bo'lsa tekshirish
+            if (!PLANS[plan || "boshlanish"])
+                return res.status(400).json({ ok: false, error: `Noto'g'ri tarif. Mavjud: ${Object.keys(PLANS).join(", ")}` });
             if (customerBotToken && customerBotToken === botToken)
                 return res.status(400).json({ ok: false, error: "POS bot va Cashback bot tokenlari bir xil bo'lmasin!" });
 

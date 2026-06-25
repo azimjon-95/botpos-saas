@@ -5,15 +5,11 @@ const express  = require("express");
 const mongoose = require("mongoose");
 const Shop     = require("../models/Shop");
 const { WEBAPP_BASE_URL } = require("../config");
-const { PLAN_PRICES }     = require("../billing/billingService");
+const { PLANS, ADDONS, calcMonthlyPrice } = require("../billing/billingService");
 const { getSectorList }   = require("../services/shopAI");
 
 // Printer narxlari
-const PRINTER_PRICES = {
-    none:   { oneTime: 0,       monthly: 0 },
-    bought: { oneTime: 700_000, monthly: 0 },
-    rental: { oneTime: 0,       monthly: 50_000 },
-};
+
 
 function onboardingRoutes() {
     const r = express.Router();
@@ -24,8 +20,8 @@ function onboardingRoutes() {
     r.post("/calculate", (req, res) => {
         const { plan = "starter", hasPrinter = false, printerType = "none", months = 1 } = req.body;
 
-        if (!PLAN_PRICES[plan])
-            return res.status(400).json({ ok: false, error: "Noto'g'ri tarif" });
+        if (!PLANS[plan])
+            return res.status(400).json({ ok: false, error: `Noto'g'ri tarif: ${plan}. Mavjud: ${Object.keys(PLANS).join(', ')}` });
 
         const planPrice    = PLAN_PRICES[plan];
         const printerOT    = hasPrinter ? (PRINTER_PRICES[printerType]?.oneTime || 0)  : 0;
@@ -194,23 +190,8 @@ function onboardingRoutes() {
 
     r.get("/plans", (req, res) => {
         res.json({ ok: true, data: {
-            plans: [
-                {
-                    key:"starter", name:"⭐ Starter",
-                    price: PLAN_PRICES.starter,
-                    features: ["Telegram bot","Sotuv+Chiqim","Qarzlar","Hisobot"],
-                },
-                {
-                    key:"pro", name:"💎 Pro",
-                    price: PLAN_PRICES.pro,
-                    features: ["Starter barcha","Cashback tizimi","AI sotuv (ovoz)","WebApp dashboard"],
-                },
-                {
-                    key:"business", name:"🏆 Business",
-                    price: PLAN_PRICES.business,
-                    features: ["Pro barcha","Chek printer","Priority support","Barcha yangiliklar"],
-                },
-            ],
+            plans:  Object.values(PLANS),
+            addons: Object.values(ADDONS),
             printer: {
                 bought: { price: 700_000, label: "Bir martalik (tavsiya)", note: "Printer sizniki bo'ladi" },
                 rental: { price: 50_000,  label: "Oylik ijara",           note: "Oyiga qo'shimcha to'lov" },

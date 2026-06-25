@@ -1,4 +1,4 @@
-// src/billing/billingService.js — Billing logikasi
+// src/billing/billingService.js
 "use strict";
 const dayjs = require("dayjs");
 const utc   = require("dayjs/plugin/utc");
@@ -7,67 +7,189 @@ dayjs.extend(utc); dayjs.extend(tz);
 
 const Shop    = require("../models/Shop");
 const Payment = require("../models/Payment");
-
 const TZ = "Asia/Tashkent";
 
-// ─── TARIF NARXLARI ──────────────────────────────────────────────────────────
-const PLAN_PRICES = {
-    starter:  150_000,
-    pro:      300_000,
-    business: 500_000,
+// ─── TARIFLAR ─────────────────────────────────────────────────────────────────
+const PLANS = {
+    boshlanish: {
+        key:   "boshlanish",
+        emoji: "🌱",
+        label: "Boshlanish",
+        price: 99_000,
+        features: [
+            "✅ Qo'lda sotuv kiritish",
+            "✅ Chiqim kiritish",
+            "✅ Kassani yopish",
+            "✅ Oylik hisobot",
+            "✅ Qarzlar boshqaruvi",
+            "✅ Xodimlar (3 tagacha)",
+            "❌ Dashboard",
+            "❌ AI ovoz",
+            "❌ QR Cashback",
+            "❌ Web App",
+        ],
+        // Bu planda nimalar ishlaydi
+        limits: { workers: 3, aiEnabled: false, cashbackEnabled: false, webappEnabled: false, dashboardEnabled: false },
+    },
+    standart: {
+        key:   "standart",
+        emoji: "⭐",
+        label: "Standart",
+        price: 149_000,
+        features: [
+            "✅ Boshlanish barcha",
+            "✅ Web Dashboard",
+            "✅ Xodimlar (10 tagacha)",
+            "✅ Statistika grafiklari",
+            "❌ AI ovoz",
+            "❌ QR Cashback",
+            "❌ Web App (do'kon sayt)",
+        ],
+        limits: { workers: 10, aiEnabled: false, cashbackEnabled: false, webappEnabled: false, dashboardEnabled: true },
+    },
+    pro: {
+        key:   "pro",
+        emoji: "💎",
+        label: "Pro",
+        price: 249_000,
+        features: [
+            "✅ Standart barcha",
+            "✅ Cheksiz xodimlar",
+            "✅ Qo'shimchalar yoqish imkoni",
+            "➕ AI ovoz: +50,000 so'm/oy",
+            "➕ QR Cashback: +30,000 so'm/oy",
+            "➕ Web App: +50,000 so'm/oy",
+        ],
+        limits: { workers: -1, aiEnabled: "addon", cashbackEnabled: "addon", webappEnabled: "addon", dashboardEnabled: true },
+    },
+    biznes: {
+        key:   "biznes",
+        emoji: "🏆",
+        label: "Biznes",
+        price: 399_000,
+        features: [
+            "✅ Pro barcha",
+            "✅ AI ovoz — BEPUL (ichida)",
+            "✅ QR Cashback — BEPUL (ichida)",
+            "✅ Web App — BEPUL (ichida)",
+            "✅ Priority support",
+            "✅ Cheksiz hamma narsa",
+        ],
+        limits: { workers: -1, aiEnabled: true, cashbackEnabled: true, webappEnabled: true, dashboardEnabled: true },
+    },
 };
 
-// ─── WEB APP NARXI ───────────────────────────────────────────────────────────
-// starter  → Web App YO'Q (tarifda yo'q)
-// pro      → +50,000 so'm/oy (qo'shimcha)
-// business → BEPUL (tarifga kiradi)
-const WEBAPP_PRICES = {
-    starter:  null,    // Ruxsat yo'q
-    pro:      50_000,  // Qo'shimcha oylik
-    business: 0,       // Bepul (ichida)
+// ─── QO'SHIMCHALAR ────────────────────────────────────────────────────────────
+const ADDONS = {
+    ai:       { key: "ai",       emoji: "🤖", label: "AI ovoz sotuv",   price: 50_000, requiredPlan: "pro" },
+    cashback: { key: "cashback", emoji: "📱", label: "QR Cashback",     price: 30_000, requiredPlan: "pro" },
+    webapp:   { key: "webapp",   emoji: "🌐", label: "Web App (do'kon sayt)", price: 50_000, requiredPlan: "pro" },
 };
 
-function canUseWebApp(plan) {
-    return plan === "pro" || plan === "business";
-}
+// ─── PRINTER ─────────────────────────────────────────────────────────────────
+const PRINTER = {
+    none:   { oneTime: 0,       monthly: 0 },
+    bought: { oneTime: 700_000, monthly: 0 },
+    rental: { oneTime: 0,       monthly: 50_000 },
+};
 
-function webAppMonthlyFee(plan) {
-    return WEBAPP_PRICES[plan] ?? null; // null = ruxsat yo'q
-}
-
-// ─── TO'LIQ OY NARXINI HISOBLASH ─────────────────────────────────────────────
+// ─── OYLIK NARX HISOBLASH ────────────────────────────────────────────────────
 function calcMonthlyPrice(shop) {
-    const base    = PLAN_PRICES[shop.plan] || PLAN_PRICES.starter;
-    const printer = shop.billing?.printerType === "rental"
-        ? (shop.billing?.printerMonthlyPrice || 0)
-        : 0;
-    // Web App qo'shimcha narxi (pro: +50k, business: 0, starter: 0)
-    const webapp  = (shop.webApp?.enabled && shop.plan === "pro")
-        ? (WEBAPP_PRICES.pro || 0)
-        : 0;
-    return base + printer + webapp;
+    const plan    = PLANS[shop.plan] || PLANS.boshlanish;
+    let   total   = plan.price;
+
+    // Printer ijara
+    if (shop.billing?.printerType === "rental") {
+        total += shop.billing?.printerMonthlyPrice || PRINTER.rental.monthly;
+    }
+
+    // Qo'shimchalar — faqat Pro da (Biznes da hammasi ichida)
+    if (shop.plan === "pro") {
+        const addons = shop.addons || {};
+        if (addons.ai)       total += ADDONS.ai.price;
+        if (addons.cashback) total += ADDONS.cashback.price;
+        if (addons.webapp)   total += ADDONS.webapp.price;
+    }
+
+    return total;
+}
+
+// ─── IMKONIYAT TEKSHIRUVI ─────────────────────────────────────────────────────
+function canUse(shop, feature) {
+    const plan   = PLANS[shop.plan] || PLANS.boshlanish;
+    const limits = plan.limits;
+    const addons = shop.addons || {};
+
+    switch (feature) {
+        case "ai":
+            return limits.aiEnabled === true ||
+                   (limits.aiEnabled === "addon" && addons.ai);
+        case "cashback":
+            return limits.cashbackEnabled === true ||
+                   (limits.cashbackEnabled === "addon" && addons.cashback);
+        case "webapp":
+            return limits.webappEnabled === true ||
+                   (limits.webappEnabled === "addon" && addons.webapp);
+        case "dashboard":
+            return !!limits.dashboardEnabled;
+        case "workers":
+            return limits.workers === -1 || true; // har doim xodim bo'lishi mumkin
+        default:
+            return false;
+    }
+}
+
+// ─── ADDON YOQISH/O'CHIRISH ───────────────────────────────────────────────────
+async function enableAddon(shopId, addonKey, adminEmail) {
+    const addon = ADDONS[addonKey];
+    if (!addon) throw new Error(`Noma'lum addon: ${addonKey}`);
+
+    const shop = await Shop.findById(shopId).lean();
+    if (!shop) throw new Error("Do'kon topilmadi");
+
+    // Plan tekshiruvi
+    if (shop.plan === "boshlanish" || shop.plan === "standart") {
+        throw new Error(
+            `"${PLANS[shop.plan]?.label}" tarifida "${addon.label}" mavjud emas.\n` +
+            `Pro yoki Biznes tarifiga o'ting.`
+        );
+    }
+    if (shop.plan === "biznes") {
+        throw new Error(`Biznes tarifida barcha qo'shimchalar allaqachon bepul ichida!`);
+    }
+
+    // Pro — yoqish
+    if (shop.addons?.[addonKey]) {
+        throw new Error(`${addon.emoji} ${addon.label} allaqachon yoqilgan`);
+    }
+
+    await Shop.updateOne({ _id: shopId }, {
+        [`addons.${addonKey}`]: true,
+    });
+
+    return { addon, price: addon.price, newMonthlyPrice: calcMonthlyPrice({ ...shop, addons: { ...shop.addons, [addonKey]: true } }) };
+}
+
+async function disableAddon(shopId, addonKey) {
+    const addon = ADDONS[addonKey];
+    if (!addon) throw new Error("Noma'lum addon");
+
+    await Shop.updateOne({ _id: shopId }, { [`addons.${addonKey}`]: false });
+
+    const shop = await Shop.findById(shopId).lean();
+    return { addon, newMonthlyPrice: calcMonthlyPrice(shop) };
 }
 
 // ─── BILLING HOLATI ───────────────────────────────────────────────────────────
-// active   = to'lov muddati kelganga 4+ kun bor
-// warning  = 3 kun yoki kamroq qoldi
-// overdue  = muddati o'tdi (lekin grace emas)
-// grace    = admin ruxsat bergan, qarzga ishlaydi
-// blocked  = to'liq bloklangan
 function getBillingStatus(shop) {
     const b = shop.billing;
     if (!b) return "active";
-
-    // Admin override — har doim grace
     if (b.adminOverride) return "grace";
-
-    // Admin qo'lda blok
     if (b.status === "blocked") return "blocked";
-
     if (!b.nextPaymentDate) return "active";
 
-    const now     = dayjs().tz(TZ);
-    const due     = dayjs(b.nextPaymentDate).tz(TZ);
+    const now      = dayjs().tz(TZ);
+    const due      = dayjs(b.nextPaymentDate).tz(TZ);
     const daysLeft = due.diff(now, "day");
 
     if (daysLeft > 3)  return "active";
@@ -75,52 +197,32 @@ function getBillingStatus(shop) {
     return "overdue";
 }
 
-// ─── BLOK TEKSHIRUV (bot va webapp uchun) ────────────────────────────────────
 function isShopBlocked(shop) {
-    const status = getBillingStatus(shop);
-    return status === "blocked" || status === "overdue";
+    const s = getBillingStatus(shop);
+    return s === "blocked" || s === "overdue";
 }
 
-// ─── TO'LOV QABUL QILISH (admin qo'lda) ─────────────────────────────────────
+// ─── TO'LOV QABUL QILISH ────────────────────────────────────────────────────
 async function confirmPayment({ shopId, amount, period, description, receivedBy, isPartial }) {
     const shop = await Shop.findById(shopId);
     if (!shop) throw new Error("Do'kon topilmadi");
 
     const monthlyPrice = calcMonthlyPrice(shop);
-    const now = dayjs().tz(TZ);
+    const now  = dayjs().tz(TZ);
+    let nextDate = shop.billing?.nextPaymentDate && dayjs(shop.billing.nextPaymentDate).isAfter(now)
+        ? dayjs(shop.billing.nextPaymentDate).add(1, "month")
+        : now.add(1, "month");
 
-    // Keyingi to'lov sanasini hisoblash
-    let nextDate;
-    if (shop.billing?.nextPaymentDate && dayjs(shop.billing.nextPaymentDate).isAfter(now)) {
-        // Muddati o'tib ketmagan — shu sanadan 1 oy qo'shamiz
-        nextDate = dayjs(shop.billing.nextPaymentDate).add(1, "month");
-    } else {
-        // Muddati o'tgan yoki birinchi to'lov — bugundan 1 oy
-        nextDate = now.add(1, "month");
-    }
+    const debt = isPartial ? Math.max(0, monthlyPrice - amount) : 0;
 
-    // Qarzni yangilash
-    let debt = shop.billing?.debtAmount || 0;
-    if (isPartial) {
-        // Qisman to'lov
-        debt = Math.max(0, monthlyPrice - amount);
-    } else {
-        debt = 0;
-    }
-
-    // To'lovni saqlash
     const payment = await Payment.create({
-        shopId: shop._id,
-        shopName: shop.name,
-        amount,
+        shopId: shop._id, shopName: shop.name, amount,
         period: period || now.format("YYYY-MM"),
         description: description || `${now.format("MMMM YYYY")} oy to'lovi`,
-        method: "manual",
-        receivedBy,
+        method: "manual", receivedBy,
         nextPaymentDate: nextDate.toDate(),
     });
 
-    // Shop billing ni yangilash
     await Shop.updateOne({ _id: shopId }, {
         "billing.status":          "active",
         "billing.nextPaymentDate": nextDate.toDate(),
@@ -131,41 +233,18 @@ async function confirmPayment({ shopId, amount, period, description, receivedBy,
         "billing.lastWarningDay":  null,
     });
 
-    return { payment, nextPaymentDate: nextDate.toDate(), debt };
+    return { payment, nextPaymentDate: nextDate.toDate(), debt, monthlyPrice };
 }
 
-// ─── ADMIN OVERRIDE — GRACE BERISH ───────────────────────────────────────────
-async function setGrace(shopId, note, adminEmail) {
-    await Shop.updateOne({ _id: shopId }, {
-        "billing.adminOverride": true,
-        "billing.overrideNote":  note || "",
-        "billing.status":        "grace",
-    });
-}
+async function setGrace(shopId, note)    { await Shop.updateOne({ _id: shopId }, { "billing.adminOverride": true, "billing.overrideNote": note || "", "billing.status": "grace" }); }
+async function removeGrace(shopId)       { await Shop.updateOne({ _id: shopId }, { "billing.adminOverride": false, "billing.overrideNote": "" }); }
+async function setBlocked(shopId)        { await Shop.updateOne({ _id: shopId }, { "billing.status": "blocked", "billing.adminOverride": false }); }
 
-async function removeGrace(shopId) {
-    await Shop.updateOne({ _id: shopId }, {
-        "billing.adminOverride": false,
-        "billing.overrideNote":  "",
-    });
-}
-
-// ─── ADMIN BLOK ───────────────────────────────────────────────────────────────
-async function setBlocked(shopId) {
-    await Shop.updateOne({ _id: shopId }, {
-        "billing.status":        "blocked",
-        "billing.adminOverride": false,
-    });
-}
-
-// ─── BARCHA SHOPLAR STATUS YANGILASH (scheduler chaqiradi) ───────────────────
 async function syncAllBillingStatuses() {
     const shops = await Shop.find({ isActive: true }).lean();
     let updated = 0;
     for (const shop of shops) {
-        if (shop.billing?.adminOverride) continue; // grace — tegmaymiz
-        if (shop.billing?.status === "blocked")    continue;
-
+        if (shop.billing?.adminOverride || shop.billing?.status === "blocked") continue;
         const newStatus = getBillingStatus(shop);
         if (newStatus !== shop.billing?.status) {
             await Shop.updateOne({ _id: shop._id }, { "billing.status": newStatus });
@@ -175,18 +254,13 @@ async function syncAllBillingStatuses() {
     return updated;
 }
 
-// ─── TO'LOV TARIXI ────────────────────────────────────────────────────────────
 async function getPaymentHistory(shopId, limit = 12) {
     return Payment.find({ shopId }).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
-// ─── STATISTIKA ───────────────────────────────────────────────────────────────
 async function getBillingStats() {
     const now = dayjs().tz(TZ);
-    const [
-        totalShops, activeShops, warningShops,
-        overdueShops, blockedShops, graceShops,
-    ] = await Promise.all([
+    const [total, active, warning, overdue, blocked, grace] = await Promise.all([
         Shop.countDocuments({ isActive: true }),
         Shop.countDocuments({ isActive: true, "billing.status": "active" }),
         Shop.countDocuments({ isActive: true, "billing.status": "warning" }),
@@ -194,34 +268,35 @@ async function getBillingStats() {
         Shop.countDocuments({ isActive: true, "billing.status": "blocked" }),
         Shop.countDocuments({ isActive: true, "billing.status": "grace" }),
     ]);
-
-    // Bu oy jami tushgan pul
-    const monthStart = now.startOf("month").toDate();
-    const monthPaid  = await Payment.aggregate([
-        { $match: { createdAt: { $gte: monthStart } } },
+    const monthPaid = await Payment.aggregate([
+        { $match: { createdAt: { $gte: now.startOf("month").toDate() } } },
         { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
-
     return {
-        shops: { total: totalShops, active: activeShops, warning: warningShops,
-                 overdue: overdueShops, blocked: blockedShops, grace: graceShops },
+        shops: { total, active, warning, overdue, blocked, grace },
         thisMonthRevenue: monthPaid?.[0]?.total || 0,
     };
 }
 
+// ─── CANUSE WEB APP (eski kod bilan mos) ─────────────────────────────────────
+function canUseWebApp(plan) {
+    return plan === "pro" || plan === "biznes";
+}
+function webAppMonthlyFee(plan) {
+    if (plan === "biznes") return 0;
+    if (plan === "pro")    return ADDONS.webapp.price;
+    return null;
+}
+
 module.exports = {
-    WEBAPP_PRICES,
-    canUseWebApp,
-    webAppMonthlyFee,
-    PLAN_PRICES,
+    PLANS, ADDONS, PRINTER,
     calcMonthlyPrice,
-    getBillingStatus,
-    isShopBlocked,
-    confirmPayment,
-    setGrace,
-    removeGrace,
-    setBlocked,
-    syncAllBillingStatuses,
-    getPaymentHistory,
-    getBillingStats,
+    canUse, canUseWebApp, webAppMonthlyFee,
+    enableAddon, disableAddon,
+    getBillingStatus, isShopBlocked,
+    confirmPayment, setGrace, removeGrace, setBlocked,
+    syncAllBillingStatuses, getPaymentHistory, getBillingStats,
+    // Eski nom bilan mos
+    PLAN_PRICES: { boshlanish: 99_000, standart: 149_000, pro: 249_000, biznes: 399_000 },
+    WEBAPP_PRICES: { pro: 50_000, biznes: 0 },
 };

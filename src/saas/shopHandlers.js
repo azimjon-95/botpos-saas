@@ -701,27 +701,27 @@ function attachHandlers(bot, ctx) {
 
             // ── SAYT YOQ — TARIF TEKSHIRUVI ─────────────────────────────
             if (!wa?.enabled) {
-                const { canUseWebApp, WEBAPP_PRICES } = require("../billing/billingService");
-
-                // Starter tarifida web app yo'q
-                if (!canUseWebApp(shopDoc.plan || "starter")) {
+                // Webapp addon yoki biznes tarifmi?
+                const freshShopDoc = await require("../models/Shop").findById(shopId).lean();
+                if (!canUse(freshShopDoc, "webapp")) {
+                    const plan = freshShopDoc?.plan || "boshlanish";
+                    const isPro = plan === "pro";
                     return bot.sendMessage(chatId,
                         `🌐 <b>Web App mavjud emas</b>\n\n` +
-                        `❌ Sizning tarifingiz: <b>${(shopDoc.plan || "starter").toUpperCase()}</b>\n\n` +
-                        `Web App uchun tarif yangilang:\n` +
-                        `💎 <b>Pro</b> — +50,000 so'm/oy\n` +
-                        `🏆 <b>Business</b> — bepul (tarifda)\n\n` +
-                        `📞 Tarif o'zgartirish: @botpos_support`,
+                        `Sizning tarifingiz: <b>${plan.toUpperCase()}</b>\n\n` +
+                        (isPro
+                            ? `Pro tarifida Web App yoqilmagan.\nAdmin panelda yoqing (+50,000 so'm/oy).\n📞 @botpos_support`
+                            : `Web App uchun tarif yangilang:\n💎 Pro + Web App addon: +50,000 so'm/oy\n🏆 Biznes: bepul (ichida)\n📞 @botpos_support`),
                         { parse_mode: "HTML" }
                     );
                 }
 
-                // Pro/Business — yaratishga ruxsat
+                // Ruxsat bor — yaratish
                 await setMode(shopId, userId, "webapp_create");
                 await saveDraft(shopId, userId, { action: "webapp_create", step: "siteName" });
 
-                const feeMsg = shopDoc.plan === "pro"
-                    ? `\n💳 <i>Qo'shimcha: +50,000 so'm/oy</i>` : "";
+                const feeMsg = freshShopDoc?.plan === "pro" && freshShopDoc?.addons?.webapp
+                    ? `\n💳 <i>+50,000 so'm/oy (addon faol)</i>` : "";
 
                 return bot.sendMessage(chatId,
                     `🌐 <b>Do'kon saytini yaratish</b>${feeMsg}\n\n` +

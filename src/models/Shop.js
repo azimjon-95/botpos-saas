@@ -116,8 +116,21 @@ const ShopSchema = new mongoose.Schema({
     // ─── TARIF ──────────────────────────────────────────────────────────────
     plan: {
         type: String,
-        enum: ["starter", "pro", "business"],
-        default: "starter",
+        enum: [
+            "boshlanish",  // 🌱  99,000/oy — asosiy
+            "standart",    // ⭐ 149,000/oy — + dashboard
+            "pro",         // 💎 249,000/oy — + ai + qr + webapp
+            "biznes",      // 🏆 399,000/oy — hammasi
+        ],
+        default: "boshlanish",
+    },
+
+    // ─── QO'SHIMCHA XIZMATLAR ────────────────────────────────────────────────
+    // Har bir qo'shimcha alohida yoqiladi va billing ga ta'sir qiladi
+    addons: {
+        ai:      { type: Boolean, default: false },   // 🤖 +50,000/oy
+        cashback:{ type: Boolean, default: false },   // 📱 +30,000/oy
+        webapp:  { type: Boolean, default: false },   // 🌐 +50,000/oy
     },
 
     // ─── BILLING ────────────────────────────────────────────────────────────
