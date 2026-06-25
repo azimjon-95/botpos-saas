@@ -13,11 +13,11 @@ const PaymentSchema = new mongoose.Schema({
 }, { _id: false });
 
 const DebtSchema = new mongoose.Schema({
-    shopId:        { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
-    kind:          { type: String, enum: ["customer", "supplier"], default: "customer", index: true },
+    shopId:        { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
+    kind:          { type: String, enum: ["customer", "supplier"], default: "customer" },
     saleId:        { type: mongoose.Schema.Types.ObjectId, default: null },
     customerPhone: { type: String, default: null },
-    supplierId:    { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+    supplierId:    { type: mongoose.Schema.Types.ObjectId, default: null },
     totalDebt:     { type: Number, required: true, default: 0 },
     remainingDebt: { type: Number, required: true, default: 0 },
     note:          { type: String, default: "" },

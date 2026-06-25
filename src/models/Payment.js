@@ -2,7 +2,7 @@
 const { mongoose } = require("../db");
 
 const PaymentSchema = new mongoose.Schema({
-    shopId:      { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
+    shopId:      { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
     shopName:    { type: String, default: "" },
 
     // To'lov ma'lumotlari

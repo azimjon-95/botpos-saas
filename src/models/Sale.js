@@ -8,15 +8,15 @@ const SaleItemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const SaleSchema = new mongoose.Schema({
-    shopId:    { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
-    orderNo:   { type: String, index: true },
+    shopId:    { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
+    orderNo:   { type: String },
     seller:    { tgId: { type: Number, required: true }, tgName: { type: String, required: true } },
     phone:     { type: String, default: null },
     items:     { type: [SaleItemSchema], required: true },
     total:     { type: Number, required: true },
     paidTotal: { type: Number, required: true },
     debtTotal: { type: Number, required: true },
-    createdAt: { type: Date, default: Date.now, index: true }
+    createdAt: { type: Date, default: Date.now }
 }, { versionKey: false });
 
 SaleSchema.index({ shopId: 1, createdAt: -1 });

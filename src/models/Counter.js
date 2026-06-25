@@ -1,7 +1,7 @@
 const { mongoose } = require("../db");
 
 const CounterSchema = new mongoose.Schema({
-    shopId: { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
+    shopId: { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
     key:    { type: String, required: true },
     value:  { type: Number, default: 0 }
 }, { versionKey: false });

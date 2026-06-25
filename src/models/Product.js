@@ -5,7 +5,7 @@
 const { mongoose } = require("../db");
 
 const ProductSchema = new mongoose.Schema({
-    shopId:   { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
+    shopId:   { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
 
     // ─── Kategoriya ─────────────────────────────────────────────────────────
     // Har do'kon o'z kategoriyalarini belgilaydi (hardcode emas)
@@ -18,7 +18,7 @@ const ProductSchema = new mongoose.Schema({
     unit:     { type: String, default: "dona" },               // dona, kg, litr
 
     // ─── Holat ───────────────────────────────────────────────────────────────
-    isActive: { type: Boolean, default: true, index: true },
+    isActive: { type: Boolean, default: true },
     sortOrder:{ type: Number, default: 0 },                   // Tartib
 
 }, { timestamps: true, versionKey: false });

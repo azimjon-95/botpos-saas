@@ -6,7 +6,7 @@ const PersonSchema = new mongoose.Schema({
 }, { _id: false });
 
 const ExpenseSchema = new mongoose.Schema({
-    shopId:      { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
+    shopId:      { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
     orderNo:     { type: String, required: true },
     spender:     { type: PersonSchema, required: true },
     title:       { type: String, required: true },

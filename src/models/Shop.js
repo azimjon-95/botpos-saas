@@ -21,9 +21,8 @@ const ShopSchema = new mongoose.Schema({
         type: String,
         enum: ["pending", "active", "blocked", "disabled"],
         default: "pending",
-        index: true,
     },
-    isActive:   { type: Boolean, default: false, index: true }, // status=active bo'lganda true
+    isActive:   { type: Boolean, default: false }, // status=active bo'lganda true
 
     // ─── Bot tokenlar (AES-256) — IXTIYORIY (pending da yo'q bo'lishi mumkin)
     botToken:            { type: String, default: "" },

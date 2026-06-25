@@ -11,7 +11,7 @@ const OrderItemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const OrderSchema = new mongoose.Schema({
-    shopId:    { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true, index: true },
+    shopId:    { type: mongoose.Schema.Types.ObjectId, ref: "Shop", required: true },
 
     // Buyurtmachi
     clientName:  { type: String, required: true },
@@ -27,7 +27,6 @@ const OrderSchema = new mongoose.Schema({
         type: String,
         enum: ["new", "confirmed", "delivering", "done", "cancelled"],
         default: "new",
-        index: true,
     },
 
     // Telegram xabar ID (do'kon egasiga yuborilgan)
