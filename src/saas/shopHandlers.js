@@ -484,6 +484,39 @@ function attachHandlers(bot, ctx) {
             return;
         }
 
+        // Saytni qayta PIN qilish
+        if (data === "wa:repin") {
+            const Shop    = require("../models/Shop");
+            const shopDoc = await Shop.findById(shopId)
+                .select("webApp webappUrl name").lean();
+            if (!shopDoc?.webApp?.enabled) return;
+            const orderChatId = shopDoc.webApp.orderChatId || groupChatId;
+            try {
+                const pinMsg = await bot.sendMessage(orderChatId,
+                    `🛍 <b>${shopDoc.webApp.siteName || shopDoc.name}</b>\n\n` +
+                    `👇 Saytga kirish uchun bosing:`,
+                    {
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            inline_keyboard: [[{
+                                text: `🛒 ${shopDoc.webApp.siteName || shopDoc.name}`,
+                                web_app: { url: shopDoc.webappUrl },
+                            }]],
+                        }
+                    }
+                );
+                if (pinMsg?.message_id) {
+                    await bot.pinChatMessage(orderChatId, pinMsg.message_id, {
+                        disable_notification: true,
+                    }).catch(() => {});
+                }
+                await bot.answerCallbackQuery(cq.id, { text: "✅ PIN qilib qo'yildi!" });
+            } catch (e) {
+                await bot.answerCallbackQuery(cq.id, { text: "❌ Xato: " + e.message });
+            }
+            return;
+        }
+
         // Buyurtmalar ro'yxati
         if (data.startsWith("wa:orders:")) {
             const Order  = require("../models/Order");
@@ -595,25 +628,36 @@ function attachHandlers(bot, ctx) {
 
         // ── WEB SAYT ─────────────────────────────────────────────────────────
         if (text === "🌐 Mening saytim") {
-            const shopDoc = await require("../models/Shop")
-                .findById(shopId)
-                .select("webApp webappUrl name")
+            const Shop    = require("../models/Shop");
+            const shopDoc = await Shop.findById(shopId)
+                .select("webApp webappUrl name adminTgId")
                 .lean();
             const wa = shopDoc?.webApp;
 
+            // ── SAYT YOQ — YARATISH JARAYONI ──────────────────────────────
             if (!wa?.enabled) {
+                await setMode(shopId, userId, "webapp_create");
+                await saveDraft(shopId, userId, { action: "webapp_create", step: "siteName" });
                 return bot.sendMessage(chatId,
-                    "🌐 Saytingiz hali yoqilmagan.\nAdmin bilan bog'laning: @botpos_support",
-                    { reply_markup: mainMenu(false) }
+                    `🌐 <b>Do'kon saytini yaratish</b>\n\n` +
+                    `Sayting nomini kiriting:\n` +
+                    `<i>Masalan: Totli Shirinliklar</i>`,
+                    {
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            keyboard: [[{ text: shopDoc.name }], [{ text: "❌ Bekor" }]],
+                            resize_keyboard: true,
+                        }
+                    }
                 );
             }
 
+            // ── SAYT BOR — BOSHQARUV ──────────────────────────────────────
             const Order = require("../models/Order");
             const [newOrders, totalOrders] = await Promise.all([
                 Order.countDocuments({ shopId, status: "new" }),
                 Order.countDocuments({ shopId }),
             ]);
-
             const text2 = [
                 `🌐 <b>${wa.siteName || shopDoc.name}</b>`,
                 ``,
@@ -622,17 +666,147 @@ function attachHandlers(bot, ctx) {
                 ``,
                 `🔗 ${shopDoc.webappUrl}`,
             ].join("\n");
-
             return bot.sendMessage(chatId, text2, {
                 parse_mode: "HTML",
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: "🛒 Yangi buyurtmalar", callback_data: "wa:orders:new" }],
                         [{ text: "📋 Barcha buyurtmalar", callback_data: "wa:orders:all" }],
+                        [{ text: "📌 Saytni qayta PIN", callback_data: "wa:repin" }],
                         [{ text: "🌐 Saytni ochish", url: shopDoc.webappUrl }],
                     ]
                 }
             });
+        }
+
+        // ── WEB SAYT YARATISH — BOSQICHLAR ───────────────────────────────────
+        if (mode === "webapp_create") {
+            const Shop  = require("../models/Shop");
+            const draft = await getDraft(shopId, userId);
+            if (!draft || draft.action !== "webapp_create") {
+                await setMode(shopId, userId, null);
+                return;
+            }
+
+            if (draft.step === "siteName") {
+                // 1. Sayt nomi olindi → guruh ID so'rash
+                const siteName = text.trim();
+                if (!siteName || siteName === "❌ Bekor") {
+                    await setMode(shopId, userId, null);
+                    await clearDraft(shopId, userId);
+                    return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(false) });
+                }
+                await saveDraft(shopId, userId, { action: "webapp_create", step: "groupId", siteName });
+                return bot.sendMessage(chatId,
+                    `✅ Sayt nomi: <b>${siteName}</b>\n\n` +
+                    `📋 Endi guruh/kanal ID sini yozing:\n` +
+                    `<i>Masalan: -1001234567890</i>\n\n` +
+                    `💡 Guruh ID ni qanday topish:\n` +
+                    `• Botni guruhga qo'shing\n` +
+                    `• /id buyrug'ini yuboring`,
+                    {
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            keyboard: [
+                                [{ text: `Hozirgi guruh: ${groupChatId || "—"}` }],
+                                [{ text: "❌ Bekor" }]
+                            ],
+                            resize_keyboard: true,
+                        }
+                    }
+                );
+            }
+
+            if (draft.step === "groupId") {
+                // 2. Guruh ID olindi → sayt yaratamiz + guruhga PIN
+                let orderChatId = text.trim();
+
+                // "Hozirgi guruh: -100..." → ID ni ajratib olamiz
+                if (orderChatId.startsWith("Hozirgi guruh:")) {
+                    orderChatId = groupChatId;
+                }
+                if (!orderChatId || orderChatId === "❌ Bekor") {
+                    await setMode(shopId, userId, null);
+                    await clearDraft(shopId, userId);
+                    return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(false) });
+                }
+                if (!orderChatId.match(/^-?\d+$/)) {
+                    return bot.sendMessage(chatId,
+                        "❌ Noto'g'ri format. Faqat raqam kiriting:\n<code>-1001234567890</code>",
+                        { parse_mode: "HTML" }
+                    );
+                }
+
+                // 3. Shop modeli yangilash
+                await Shop.updateOne({ _id: shopId }, {
+                    "webApp.enabled":     true,
+                    "webApp.siteName":    draft.siteName,
+                    "webApp.orderChatId": orderChatId,
+                    "webApp.createdAt":   new Date(),
+                });
+
+                const updatedShop = await Shop.findById(shopId)
+                    .select("webappUrl name webApp")
+                    .lean();
+                const webappUrl = updatedShop.webappUrl;
+
+                // 4. Guruhga PIN xabar — rasmli, WebApp tugma bilan
+                let pinMsgId = null;
+                try {
+                    const pinText = [
+                        `🛍 <b>${draft.siteName}</b>`,
+                        ``,
+                        `Bugungi tushum, chiqim va balans holatini`,
+                        `onlayn kuzatib boring.`,
+                        ``,
+                        `👇 Pastdagi tugmani bosing:`,
+                    ].join("\n");
+
+                    const pinMsg = await bot.sendMessage(orderChatId, pinText, {
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            inline_keyboard: [[{
+                                text: `🛒 ${draft.siteName} — Buyurtma berish`,
+                                web_app: { url: webappUrl },
+                            }]],
+                        }
+                    });
+
+                    pinMsgId = pinMsg?.message_id;
+
+                    // 5. Avtomatik PIN qilish
+                    if (pinMsgId) {
+                        await bot.pinChatMessage(orderChatId, pinMsgId, {
+                            disable_notification: false,
+                        }).catch(e => console.warn("[webapp] pin xato:", e.message));
+                    }
+                } catch (e) {
+                    console.error("[webapp] guruh xabar xato:", e.message);
+                }
+
+                // 6. Foydalanuvchiga tasdiq
+                await setMode(shopId, userId, null);
+                await clearDraft(shopId, userId);
+
+                return bot.sendMessage(chatId,
+                    `✅ <b>Saytingiz tayyor!</b>\n\n` +
+                    `🌐 <b>${draft.siteName}</b>\n` +
+                    `🔗 ${webappUrl}\n\n` +
+                    (pinMsgId
+                        ? `📌 Guruhga PIN qilib qo'yildi!`
+                        : `⚠️ PIN qilib bo'lmadi. Bot guruhda admin bo'lishi kerak.`),
+                    {
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            inline_keyboard: [[{
+                                text: "🌐 Saytni ochish",
+                                web_app: { url: webappUrl },
+                            }]],
+                        }
+                    }
+                );
+            }
+            return;
         }
 
         // ── BEKOR QILISH ────────────────────────────────────────────────────
