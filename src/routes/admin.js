@@ -479,6 +479,51 @@ function adminRoutes() {
         } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
     });
 
+
+    // ─── WEB APP BOSHQARUV ───────────────────────────────────────────────────
+
+    // POST /api/admin/shops/:id/webapp/enable — ruxsat berish
+    r.post("/shops/:id/webapp/enable", async (req, res) => {
+        try {
+            const shop = await Shop.findById(req.params.id).lean();
+            if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
+
+            await Shop.updateOne({ _id: req.params.id }, {
+                "webApp.enabled":   true,
+                "webApp.createdAt": new Date(),
+            });
+            await audit(req.adminEmail, "webapp.enable", req.params.id, shop.name, {}, req.ip);
+            res.json({ ok: true, data: {
+                message: "Web app yoqildi",
+                url:     shop.webappUrl || `${require("../config").WEBAPP_BASE_URL}?shop=${shop._id}`,
+            }});
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
+    // POST /api/admin/shops/:id/webapp/disable
+    r.post("/shops/:id/webapp/disable", async (req, res) => {
+        try {
+            await Shop.updateOne({ _id: req.params.id }, { "webApp.enabled": false });
+            res.json({ ok: true, message: "Web app o'chirildi" });
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
+    // GET /api/admin/shops/:id/webapp/orders — buyurtmalar
+    r.get("/shops/:id/webapp/orders", async (req, res) => {
+        try {
+            const Order = require("../models/Order");
+            const { page = 1, limit = 20, status } = req.query;
+            const filter = { shopId: req.params.id };
+            if (status) filter.status = status;
+            const [orders, total] = await Promise.all([
+                Order.find(filter).sort({ createdAt: -1 })
+                    .skip((+page-1)*+limit).limit(+limit).lean(),
+                Order.countDocuments(filter),
+            ]);
+            res.json({ ok: true, data: { orders, total } });
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
     r.get("/bots/status", (req, res) => {
         res.json({ ok: true, data: getStatus() });
     });

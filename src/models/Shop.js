@@ -77,6 +77,32 @@ const ShopSchema = new mongoose.Schema({
         lastAiRequestAt: { type: Date, default: null },
     },
 
+
+    // ─── WEB APP (do'kon sayt) ───────────────────────────────────────────────
+    webApp: {
+        // Admin ruxsat berganmi?
+        enabled:     { type: Boolean, default: false },
+
+        // Do'kon sayt nomi (mijoz belgilaydi)
+        siteName:    { type: String, default: "" },
+
+        // Slug — URL da ishlatiladi: botpos.uz?shop=SHOPID
+        // webappUrl allaqachon bor — shu ishlatiladi
+
+        // Banner rasm URL (mijoz o'zi o'zgartiradi)
+        bannerUrl:   { type: String, default: "" },
+
+        // Guruh/kanal ID — buyurtma xabarlari ketadi
+        orderChatId: { type: String, default: "" },
+
+        // Sayt yaratilgan vaqt
+        createdAt:   { type: Date, default: null },
+
+        // Statistika
+        totalOrders:   { type: Number, default: 0 },
+        totalVisitors: { type: Number, default: 0 },
+    },
+
     // ─── TARIF ──────────────────────────────────────────────────────────────
     plan: {
         type: String,

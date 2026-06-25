@@ -327,15 +327,14 @@ FAQAT JSON qaytaring. Hech qanday matn qo'shmang.`,
 
 
 // ─── MENYU ───────────────────────────────────────────────────────────────────
-function mainMenu() {
-    return {
-        keyboard: [
-            [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
-            [{ text: "📌 Qarzlar" }, { text: "🔒 Kassani yopish" }],
-            [{ text: "📆 Oylik hisobot" }, { text: "📋 Menyu" }],
-        ],
-        resize_keyboard: true,
-    };
+function mainMenu(hasWebApp = false) {
+    const rows = [
+        [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
+        [{ text: "📌 Qarzlar" }, { text: "🔒 Kassani yopish" }],
+        [{ text: "📆 Oylik hisobot" }, { text: "📋 Menyu" }],
+    ];
+    if (hasWebApp) rows.push([{ text: "🌐 Mening saytim" }]);
+    return { keyboard: rows, resize_keyboard: true };
 }
 
 function expenseCategoryKeyboard() {
@@ -400,7 +399,8 @@ async function monthlyReport(shopId) {
 // ─── HANDLER ULASH ───────────────────────────────────────────────────────────
 function attachHandlers(bot, ctx) {
     const { shopId, groupChatId, adminTgId, botPassword } = ctx;
-    const sector = ctx.shop?.sector || "boshqa";
+    const sector    = ctx.shop?.sector   || "boshqa";
+    const hasWebApp = !!ctx.shop?.webApp?.enabled;
 
     // Suhbat tarixi (Redis, 10 xabar)
     const histKey = (uid) => `hist:${shopId}:${uid}`;
@@ -445,7 +445,7 @@ function attachHandlers(bot, ctx) {
         const chatId = msg.chat.id;
         if (!userId) return;
         if (await isAuthed(shopId, userId)) {
-            return bot.sendMessage(chatId, "🏠 Asosiy menyu:", { reply_markup: mainMenu() });
+            return bot.sendMessage(chatId, "🏠 Asosiy menyu:", { reply_markup: mainMenu(hasWebApp) });
         }
         return bot.sendMessage(chatId, "🔒 Xush kelibsiz!\n\nParolni kiriting:", {
             reply_markup: { remove_keyboard: true },
@@ -462,6 +462,47 @@ function attachHandlers(bot, ctx) {
         if (!chatId || !userId) return;
         if (!(await isAuthed(shopId, userId))) return;
 
+
+        // Buyurtma tasdiqlash/bekor
+        if (data.startsWith("order_confirm:") || data.startsWith("order_cancel:")) {
+            const Order  = require("../models/Order");
+            const isConf = data.startsWith("order_confirm:");
+            const oid    = data.replace(/^order_(confirm|cancel):/, "");
+            try {
+                const status = isConf ? "confirmed" : "cancelled";
+                const order  = await Order.findOneAndUpdate(
+                    { _id: oid, shopId }, { status }, { new: true }
+                );
+                if (!order) return;
+                const label = isConf ? "✅ Tasdiqlandi" : "❌ Bekor qilindi";
+                await bot.answerCallbackQuery(cq.id, { text: label });
+                await bot.editMessageReplyMarkup(
+                    { inline_keyboard: [[{ text: `${label} — ${order.clientName}`, callback_data: "noop" }]] },
+                    { chat_id: chatId, message_id: msgId }
+                ).catch(() => {});
+            } catch (e) { await bot.answerCallbackQuery(cq.id, { text: "Xato!" }); }
+            return;
+        }
+
+        // Buyurtmalar ro'yxati
+        if (data.startsWith("wa:orders:")) {
+            const Order  = require("../models/Order");
+            const filter = data === "wa:orders:new" ? { shopId, status: "new" } : { shopId };
+            const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(10).lean();
+            if (!orders.length) {
+                return bot.sendMessage(chatId, "📭 Buyurtmalar yo'q.");
+            }
+            for (const o of orders) {
+                const lines = o.items.map(it => `• ${it.name} x${it.qty}`).join("\n");
+                const statusEmoji = { new:"🆕", confirmed:"✅", delivering:"🚚", done:"✔️", cancelled:"❌" };
+                await bot.sendMessage(chatId,
+                    `${statusEmoji[o.status]||"📦"} <b>${o.clientName}</b> — ${formatMoney(o.total)} so'm\n` +
+                    `📞 ${o.clientPhone}\n${lines}`,
+                    { parse_mode: "HTML" }
+                );
+            }
+            return;
+        }
 
         // Billing ma'lumoti
         if (data === "billing:info") {
@@ -551,6 +592,48 @@ function attachHandlers(bot, ctx) {
         if (isCatalogStep) return;
 
         const mode = await getMode(shopId, userId);
+
+        // ── WEB SAYT ─────────────────────────────────────────────────────────
+        if (text === "🌐 Mening saytim") {
+            const shopDoc = await require("../models/Shop")
+                .findById(shopId)
+                .select("webApp webappUrl name")
+                .lean();
+            const wa = shopDoc?.webApp;
+
+            if (!wa?.enabled) {
+                return bot.sendMessage(chatId,
+                    "🌐 Saytingiz hali yoqilmagan.\nAdmin bilan bog'laning: @botpos_support",
+                    { reply_markup: mainMenu(false) }
+                );
+            }
+
+            const Order = require("../models/Order");
+            const [newOrders, totalOrders] = await Promise.all([
+                Order.countDocuments({ shopId, status: "new" }),
+                Order.countDocuments({ shopId }),
+            ]);
+
+            const text2 = [
+                `🌐 <b>${wa.siteName || shopDoc.name}</b>`,
+                ``,
+                `📦 Yangi buyurtmalar: <b>${newOrders}</b>`,
+                `📊 Jami buyurtmalar: <b>${totalOrders}</b>`,
+                ``,
+                `🔗 ${shopDoc.webappUrl}`,
+            ].join("\n");
+
+            return bot.sendMessage(chatId, text2, {
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🛒 Yangi buyurtmalar", callback_data: "wa:orders:new" }],
+                        [{ text: "📋 Barcha buyurtmalar", callback_data: "wa:orders:all" }],
+                        [{ text: "🌐 Saytni ochish", url: shopDoc.webappUrl }],
+                    ]
+                }
+            });
+        }
 
         // ── BEKOR QILISH ────────────────────────────────────────────────────
         if (text === "❌ Bekor qilish") {
