@@ -484,6 +484,42 @@ function attachHandlers(bot, ctx) {
             return;
         }
 
+        // Rang tanlash
+        if (data.startsWith("wa_theme:")) {
+            const themeKey = data.replace("wa_theme:", "");
+            const theme = WEBAPP_THEMES[themeKey];
+            if (!theme) return;
+
+            const draft = await getDraft(shopId, userId);
+            if (!draft || draft.action !== "webapp_create") return;
+
+            // Tanlangan rangni saqlash
+            await saveDraft(shopId, userId, { ...draft, step: "groupId", themeKey });
+            await bot.answerCallbackQuery(cq.id, { text: `${theme.emoji} ${theme.label} tanlandi!` });
+
+            // Rang preview + guruh ID so'rash
+            await bot.editMessageText(
+                `✅ Rang: <b>${theme.emoji} ${theme.label}</b>\n` +
+                `<code>Asosiy: ${theme.primary} | Aksent: ${theme.accent}</code>\n\n` +
+                `<b>3/3</b> — Buyurtma keladigan guruh/kanal ID:`,
+                { chat_id: chatId, message_id: msgId, parse_mode: "HTML" }
+            ).catch(() => {});
+
+            return bot.sendMessage(chatId,
+                `📋 Guruh ID kiriting:\n<i>-1001234567890</i>`,
+                {
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: `Hozirgi guruh: ${groupChatId || "—"}` }],
+                            [{ text: "❌ Bekor" }],
+                        ],
+                        resize_keyboard: true,
+                    }
+                }
+            );
+        }
+
         // Saytni qayta PIN qilish
         if (data === "wa:repin") {
             const Shop    = require("../models/Shop");
@@ -640,8 +676,8 @@ function attachHandlers(bot, ctx) {
                 await saveDraft(shopId, userId, { action: "webapp_create", step: "siteName" });
                 return bot.sendMessage(chatId,
                     `🌐 <b>Do'kon saytini yaratish</b>\n\n` +
-                    `Sayting nomini kiriting:\n` +
-                    `<i>Masalan: Totli Shirinliklar</i>`,
+                    `<b>1/3</b> — Sayt nomini kiriting:\n` +
+                    `<i>Masalan: Totli Shirinliklar, AutoParts Uz</i>`,
                     {
                         parse_mode: "HTML",
                         reply_markup: {
@@ -689,36 +725,37 @@ function attachHandlers(bot, ctx) {
             }
 
             if (draft.step === "siteName") {
-                // 1. Sayt nomi olindi → guruh ID so'rash
+                // 1. Sayt nomi olindi → RANG tanlash
                 const siteName = text.trim();
                 if (!siteName || siteName === "❌ Bekor") {
                     await setMode(shopId, userId, null);
                     await clearDraft(shopId, userId);
                     return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(false) });
                 }
-                await saveDraft(shopId, userId, { action: "webapp_create", step: "groupId", siteName });
+                await saveDraft(shopId, userId, { action: "webapp_create", step: "theme", siteName });
+                // Keyboard olib tashlaymiz — inline tugmalar ishlatamiz
+                await bot.sendMessage(chatId, "⌨️", {
+                    reply_markup: { remove_keyboard: true }
+                }).then(m => bot.deleteMessage(chatId, m.message_id)).catch(() => {});
+
                 return bot.sendMessage(chatId,
                     `✅ Sayt nomi: <b>${siteName}</b>\n\n` +
-                    `📋 Endi guruh/kanal ID sini yozing:\n` +
-                    `<i>Masalan: -1001234567890</i>\n\n` +
-                    `💡 Guruh ID ni qanday topish:\n` +
-                    `• Botni guruhga qo'shing\n` +
-                    `• /id buyrug'ini yuboring`,
+                    `<b>2/3</b> — Sayt rangini tanlang:\n` +
+                    `<i>Do'koningiz uslubiga mos rangni tanlang</i>`,
                     {
                         parse_mode: "HTML",
-                        reply_markup: {
-                            keyboard: [
-                                [{ text: `Hozirgi guruh: ${groupChatId || "—"}` }],
-                                [{ text: "❌ Bekor" }]
-                            ],
-                            resize_keyboard: true,
-                        }
+                        reply_markup: themeKeyboard(),
                     }
                 );
             }
 
+            if (draft.step === "theme_chosen") {
+                // Agar matn kelsa — guruh ID kutilmoqda
+                // (bu step callbackdan keyingi xabarlar uchun)
+            }
+
             if (draft.step === "groupId") {
-                // 2. Guruh ID olindi → sayt yaratamiz + guruhga PIN
+                // 3. Guruh ID olindi → sayt yaratamiz + guruhga PIN
                 let orderChatId = text.trim();
 
                 // "Hozirgi guruh: -100..." → ID ni ajratib olamiz
@@ -730,19 +767,29 @@ function attachHandlers(bot, ctx) {
                     await clearDraft(shopId, userId);
                     return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(false) });
                 }
-                if (!orderChatId.match(/^-?\d+$/)) {
+                if (!orderChatId.match(/^-?[0-9]+$/)) {
                     return bot.sendMessage(chatId,
                         "❌ Noto'g'ri format. Faqat raqam kiriting:\n<code>-1001234567890</code>",
                         { parse_mode: "HTML" }
                     );
                 }
 
-                // 3. Shop modeli yangilash
+                // Tanlangan tema
+                const theme = WEBAPP_THEMES[draft.themeKey] || WEBAPP_THEMES.dark;
+
+                // Shop modeli yangilash — rang bilan
                 await Shop.updateOne({ _id: shopId }, {
-                    "webApp.enabled":     true,
-                    "webApp.siteName":    draft.siteName,
-                    "webApp.orderChatId": orderChatId,
-                    "webApp.createdAt":   new Date(),
+                    "webApp.enabled":          true,
+                    "webApp.siteName":         draft.siteName,
+                    "webApp.orderChatId":      orderChatId,
+                    "webApp.createdAt":        new Date(),
+                    "webApp.theme.primary":    theme.primary,
+                    "webApp.theme.accent":     theme.accent,
+                    "webApp.theme.bg":         theme.bg,
+                    "webApp.theme.cardBg":     theme.cardBg,
+                    "webApp.theme.navBg":      theme.navBg,
+                    "webApp.theme.text":       theme.text,
+                    "webApp.theme.themeKey":   theme.key,
                 });
 
                 const updatedShop = await Shop.findById(shopId)
@@ -1066,6 +1113,27 @@ function attachHandlers(bot, ctx) {
     });
 
     console.log(`[shopHandlers] ✅ Handler ulandi: ${ctx.shop?.name || shopId}`);
+}
+
+
+// ─── WEBAPP RANGLAR ───────────────────────────────────────────────────────────
+const WEBAPP_THEMES = {
+    dark:    { key:"dark",    emoji:"🖤", label:"Qora (klassik)",   primary:"#0d0d0d", accent:"#f5c842", bg:"#faf6f0", cardBg:"#ffffff", navBg:"#ffffff", text:"#0d0d0d" },
+    light:   { key:"light",   emoji:"🤍", label:"Oq (minimal)",     primary:"#1a1a1a", accent:"#3b82f6", bg:"#f8fafc", cardBg:"#ffffff", navBg:"#ffffff", text:"#1a1a1a" },
+    gold:    { key:"gold",    emoji:"💛", label:"Oltin (luxe)",     primary:"#7c5c0a", accent:"#f5c842", bg:"#fffbf0", cardBg:"#fff9e6", navBg:"#fff9e6", text:"#3d2f00" },
+    green:   { key:"green",   emoji:"💚", label:"Yashil (tabiiy)",  primary:"#1a4731", accent:"#22c55e", bg:"#f0faf4", cardBg:"#ffffff", navBg:"#ffffff", text:"#1a4731" },
+    red:     { key:"red",     emoji:"❤️", label:"Qizil (energiya)", primary:"#7f1d1d", accent:"#ef4444", bg:"#fff5f5", cardBg:"#ffffff", navBg:"#ffffff", text:"#7f1d1d" },
+    purple:  { key:"purple",  emoji:"💜", label:"Binafsha (zamonaviy)", primary:"#3b0764", accent:"#a855f7", bg:"#faf5ff", cardBg:"#ffffff", navBg:"#ffffff", text:"#3b0764" },
+    orange:  { key:"orange",  emoji:"🧡", label:"To'q sariq (issiq)", primary:"#7c2d12", accent:"#f97316", bg:"#fff7ed", cardBg:"#ffffff", navBg:"#ffffff", text:"#7c2d12" },
+    blue:    { key:"blue",    emoji:"🩵", label:"Ko'k (professional)", primary:"#1e3a5f", accent:"#3b82f6", bg:"#eff6ff", cardBg:"#ffffff", navBg:"#ffffff", text:"#1e3a5f" },
+};
+
+function themeKeyboard() {
+    const rows = Object.values(WEBAPP_THEMES).map(t => ([{
+        text: `${t.emoji} ${t.label}`,
+        callback_data: `wa_theme:${t.key}`,
+    }]));
+    return { inline_keyboard: rows };
 }
 
 

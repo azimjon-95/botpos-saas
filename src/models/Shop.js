@@ -98,6 +98,16 @@ const ShopSchema = new mongoose.Schema({
         // Sayt yaratilgan vaqt
         createdAt:   { type: Date, default: null },
 
+        // Rang tema
+        theme: {
+            primary:    { type: String, default: "#0d0d0d" },  // Asosiy rang (tugmalar)
+            accent:     { type: String, default: "#f5c842" },  // Aksent rang
+            bg:         { type: String, default: "#faf6f0" },  // Fon rangi
+            cardBg:     { type: String, default: "#ffffff" },  // Karta fon
+            navBg:      { type: String, default: "#ffffff" },  // Navbar fon
+            text:       { type: String, default: "#0d0d0d" },  // Matn rangi
+            themeKey:   { type: String, default: "dark" },     // Tema kaliti
+        },
         // Statistika
         totalOrders:   { type: Number, default: 0 },
         totalVisitors: { type: Number, default: 0 },

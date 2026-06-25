@@ -27,12 +27,21 @@ function webappRoutes() {
                 return res.status(403).json({ ok: false, error: "Web sayt yoqilmagan" });
 
             res.json({ ok: true, data: {
-                shopId:      shop._id,
-                name:        shop.webApp?.siteName || shop.name,
-                shopName:    shop.name,
-                bannerUrl:   shop.webApp?.bannerUrl || "",
-                phone:       shop.webApp?.phone || "",
-                sector:      shop.sector || "boshqa",
+                shopId:    shop._id,
+                name:      shop.webApp?.siteName || shop.name,
+                shopName:  shop.name,
+                bannerUrl: shop.webApp?.bannerUrl || "",
+                phone:     shop.webApp?.phone || "",
+                sector:    shop.sector || "boshqa",
+                theme: {
+                    primary:  shop.webApp?.theme?.primary  || "#0d0d0d",
+                    accent:   shop.webApp?.theme?.accent   || "#f5c842",
+                    bg:       shop.webApp?.theme?.bg       || "#faf6f0",
+                    cardBg:   shop.webApp?.theme?.cardBg   || "#ffffff",
+                    navBg:    shop.webApp?.theme?.navBg    || "#ffffff",
+                    text:     shop.webApp?.theme?.text     || "#0d0d0d",
+                    themeKey: shop.webApp?.theme?.themeKey || "dark",
+                },
             }});
         } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
     });
