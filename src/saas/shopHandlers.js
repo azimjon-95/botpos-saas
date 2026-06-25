@@ -699,12 +699,32 @@ function attachHandlers(bot, ctx) {
                 .lean();
             const wa = shopDoc?.webApp;
 
-            // ── SAYT YOQ — YARATISH JARAYONI ──────────────────────────────
+            // ── SAYT YOQ — TARIF TEKSHIRUVI ─────────────────────────────
             if (!wa?.enabled) {
+                const { canUseWebApp, WEBAPP_PRICES } = require("../billing/billingService");
+
+                // Starter tarifida web app yo'q
+                if (!canUseWebApp(shopDoc.plan || "starter")) {
+                    return bot.sendMessage(chatId,
+                        `🌐 <b>Web App mavjud emas</b>\n\n` +
+                        `❌ Sizning tarifingiz: <b>${(shopDoc.plan || "starter").toUpperCase()}</b>\n\n` +
+                        `Web App uchun tarif yangilang:\n` +
+                        `💎 <b>Pro</b> — +50,000 so'm/oy\n` +
+                        `🏆 <b>Business</b> — bepul (tarifda)\n\n` +
+                        `📞 Tarif o'zgartirish: @botpos_support`,
+                        { parse_mode: "HTML" }
+                    );
+                }
+
+                // Pro/Business — yaratishga ruxsat
                 await setMode(shopId, userId, "webapp_create");
                 await saveDraft(shopId, userId, { action: "webapp_create", step: "siteName" });
+
+                const feeMsg = shopDoc.plan === "pro"
+                    ? `\n💳 <i>Qo'shimcha: +50,000 so'm/oy</i>` : "";
+
                 return bot.sendMessage(chatId,
-                    `🌐 <b>Do'kon saytini yaratish</b>\n\n` +
+                    `🌐 <b>Do'kon saytini yaratish</b>${feeMsg}\n\n` +
                     `<b>1/3</b> — Sayt nomini kiriting:\n` +
                     `<i>Masalan: Totli Shirinliklar, AutoParts Uz</i>`,
                     {

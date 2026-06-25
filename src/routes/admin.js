@@ -16,6 +16,7 @@ const mongoose   = require("mongoose");
 const Shop       = require("../models/Shop");
 const AuditLog   = require("../models/AuditLog");
 const { getUsageStats, getSectorList } = require("../services/shopAI");
+const { canUseWebApp, webAppMonthlyFee, WEBAPP_PRICES } = require("../billing/billingService");
 const { restoreFromJson, buildFullBackup } = require("../services/backup");
 const { manualBackup } = require("../services/backupScheduler");
 const SuperAdmin = require("../models/SuperAdmin");
@@ -488,30 +489,84 @@ function adminRoutes() {
 
     // ─── WEB APP BOSHQARUV ───────────────────────────────────────────────────
 
-    // POST /api/admin/shops/:id/webapp/enable — ruxsat berish
+    // POST /api/admin/shops/:id/webapp/enable — ruxsat berish + billing yangilash
     r.post("/shops/:id/webapp/enable", async (req, res) => {
         try {
             const shop = await Shop.findById(req.params.id).lean();
             if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
 
+            // Tarif tekshiruvi
+            if (!canUseWebApp(shop.plan)) {
+                return res.status(403).json({
+                    ok: false,
+                    error: `⛔ "${shop.plan.toUpperCase()}" tarifi Web App ni qo'llab-quvvatlamaydi.`,
+                    hint: "Pro yoki Business tarifiga o'ting.",
+                    upgrade: {
+                        pro:      { price: WEBAPP_PRICES.pro, label: "Pro — +50,000 so'm/oy" },
+                        business: { price: 0,                  label: "Business — bepul (ichida)" },
+                    },
+                });
+            }
+
+            const webFee = webAppMonthlyFee(shop.plan) || 0;
+
             await Shop.updateOne({ _id: req.params.id }, {
                 "webApp.enabled":   true,
                 "webApp.createdAt": new Date(),
+                // Pro tarifda oylik narx oshadi
+                ...(webFee > 0 ? {
+                    "billing.monthlyPrice": (shop.billing?.monthlyPrice || 0) + webFee,
+                } : {}),
             });
-            await audit(req.adminEmail, "webapp.enable", req.params.id, shop.name, {}, req.ip);
+
+            await audit(req.adminEmail, "webapp.enable", req.params.id, shop.name,
+                { plan: shop.plan, webFee }, req.ip);
+
+            const { WEBAPP_BASE_URL } = require("../config");
             res.json({ ok: true, data: {
-                message: "Web app yoqildi",
-                url:     shop.webappUrl || `${require("../config").WEBAPP_BASE_URL}?shop=${shop._id}`,
+                message:     `Web App yoqildi ✅`,
+                plan:        shop.plan,
+                webFee,
+                feeLabel:    webFee > 0
+                    ? `Oylik to'lov +${webFee.toLocaleString()} so'm ga oshdi`
+                    : "Bepul (Business tarifi)",
+                url: shop.webappUrl || `${WEBAPP_BASE_URL}?shop=${shop._id}`,
             }});
         } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
     });
 
-    // POST /api/admin/shops/:id/webapp/disable
+    // POST /api/admin/shops/:id/webapp/disable — o'chirish + billing kamaytirish
     r.post("/shops/:id/webapp/disable", async (req, res) => {
         try {
-            await Shop.updateOne({ _id: req.params.id }, { "webApp.enabled": false });
-            res.json({ ok: true, message: "Web app o'chirildi" });
+            const shop = await Shop.findById(req.params.id).lean();
+            if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
+
+            const webFee = (shop.webApp?.enabled && shop.plan === "pro")
+                ? (WEBAPP_PRICES.pro || 0) : 0;
+
+            await Shop.updateOne({ _id: req.params.id }, {
+                "webApp.enabled": false,
+                ...(webFee > 0 ? {
+                    "billing.monthlyPrice": Math.max(0,
+                        (shop.billing?.monthlyPrice || 0) - webFee),
+                } : {}),
+            });
+
+            await audit(req.adminEmail, "webapp.disable", req.params.id, shop.name, {}, req.ip);
+            res.json({ ok: true, message: "Web App o'chirildi", webFee });
         } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
+    // GET /api/admin/webapp/pricing — WebApp narxlari
+    r.get("/webapp/pricing", (req, res) => {
+        res.json({ ok: true, data: {
+            plans: {
+                starter:  { canUse: false, fee: null,   label: "❌ Mavjud emas" },
+                pro:      { canUse: true,  fee: 50_000, label: "✅ +50,000 so'm/oy" },
+                business: { canUse: true,  fee: 0,      label: "✅ Bepul (tarifda)" },
+            },
+            note: "Starter tarifida Web App mavjud emas. Pro yoki Business tarifiga o'ting.",
+        }});
     });
 
     // GET /api/admin/shops/:id/webapp/orders — buyurtmalar

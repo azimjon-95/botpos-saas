@@ -35,6 +35,11 @@ function onboardingRoutes() {
         const n = Math.max(1, Math.min(12, Number(months) || 1));
 
         const sectors = getSectorList();
+        const { WEBAPP_PRICES, canUseWebApp } = require("../billing/billingService");
+        const includeWebApp = req.body.includeWebApp === true;
+        const webAppFee = (includeWebApp && canUseWebApp(plan))
+            ? (WEBAPP_PRICES[plan] || 0) : 0;
+
         res.json({ ok: true, data: {
             plan,
             planName:    { starter:"Starter", pro:"Pro", business:"Business" }[plan],
@@ -48,7 +53,16 @@ function onboardingRoutes() {
                           : printerType === "rental" ? "Oylik ijara"
                           : "Yo'q",
             },
-            monthlyTotal,
+            webApp: {
+                included:   includeWebApp,
+                canUse:     canUseWebApp(plan),
+                fee:        canUseWebApp(plan) ? (WEBAPP_PRICES[plan] || 0) : null,
+                label:      !canUseWebApp(plan)
+                    ? "❌ Starter tarifida yo'q"
+                    : (WEBAPP_PRICES[plan] === 0 ? "✅ Bepul" : `+${(WEBAPP_PRICES[plan]||0).toLocaleString()} so'm/oy`),
+            },
+            monthlyTotal: monthlyTotal + webAppFee,
+            monthlyWithoutWebApp: monthlyTotal,
             months:     n,
             firstPayment:    printerOT + monthlyTotal,
             recurringPayment: monthlyTotal,

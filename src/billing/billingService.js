@@ -17,13 +17,35 @@ const PLAN_PRICES = {
     business: 500_000,
 };
 
+// ─── WEB APP NARXI ───────────────────────────────────────────────────────────
+// starter  → Web App YO'Q (tarifda yo'q)
+// pro      → +50,000 so'm/oy (qo'shimcha)
+// business → BEPUL (tarifga kiradi)
+const WEBAPP_PRICES = {
+    starter:  null,    // Ruxsat yo'q
+    pro:      50_000,  // Qo'shimcha oylik
+    business: 0,       // Bepul (ichida)
+};
+
+function canUseWebApp(plan) {
+    return plan === "pro" || plan === "business";
+}
+
+function webAppMonthlyFee(plan) {
+    return WEBAPP_PRICES[plan] ?? null; // null = ruxsat yo'q
+}
+
 // ─── TO'LIQ OY NARXINI HISOBLASH ─────────────────────────────────────────────
 function calcMonthlyPrice(shop) {
     const base    = PLAN_PRICES[shop.plan] || PLAN_PRICES.starter;
     const printer = shop.billing?.printerType === "rental"
         ? (shop.billing?.printerMonthlyPrice || 0)
         : 0;
-    return base + printer;
+    // Web App qo'shimcha narxi (pro: +50k, business: 0, starter: 0)
+    const webapp  = (shop.webApp?.enabled && shop.plan === "pro")
+        ? (WEBAPP_PRICES.pro || 0)
+        : 0;
+    return base + printer + webapp;
 }
 
 // ─── BILLING HOLATI ───────────────────────────────────────────────────────────
@@ -188,6 +210,9 @@ async function getBillingStats() {
 }
 
 module.exports = {
+    WEBAPP_PRICES,
+    canUseWebApp,
+    webAppMonthlyFee,
     PLAN_PRICES,
     calcMonthlyPrice,
     getBillingStatus,

@@ -26,6 +26,9 @@ function warningMsg(shop, daysLeft, price) {
         `Tarif: <b>${shop.plan.toUpperCase()}</b>${shop.billing.hasPrinter ? " + Printer" : ""}`,
         ``,
         `💰 To'lov summasi: <b>${price.toLocaleString()} so'm/oy</b>`,
+        shop.webApp?.enabled && shop.plan === "pro"
+            ? `   └ Web App: <b>+50,000 so'm</b> (Pro qo'shimcha)`
+            : "",
         `📅 To'lov sanasi: <b>${due}</b>`,
         `⏳ Qolgan vaqt: <b>${daysLeft} kun</b>`,
         ``,
