@@ -570,28 +570,11 @@ function attachHandlers(bot, ctx) {
             if (!shopDoc?.webApp?.enabled) return;
             const orderChatId = shopDoc.webApp.orderChatId || groupChatId;
             try {
-                const { getBot: getBotFn } = require("./botManager");
-                const pinBot = getBotFn(shopId, "customer") || bot;
-                const shopName = shopDoc.webApp.siteName || shopDoc.name;
-                const pinMsg = await pinBot.sendMessage(orderChatId,
-                    `🛍 <b>${shopName}</b>\n\n` +
-                    `🎁 Xaridingizdan cashback bonus to'plang!\n\n` +
-                    `👇 Xarid qilish uchun bosing:`,
-                    {
-                        parse_mode: "HTML",
-                        reply_markup: {
-                            inline_keyboard: [[{
-                                text: `🛒 ${shopName} — Xarid qilish`,
-                                web_app: { url: shopDoc.webappUrl },
-                            }]],
-                        }
-                    }
-                );
-                if (pinMsg?.message_id) {
-                    await pinBot.pinChatMessage(orderChatId, pinMsg.message_id, {
-                        disable_notification: true,
-                    }).catch(() => {});
-                }
+                const { pinWebAppToGroup } = require("./customerHandlers");
+                const { getBot: getCBotFn } = require("./botManager");
+                const cBot = getCBotFn(shopId, "customer");
+                if (!cBot) throw new Error("Cashback bot topilmadi");
+                await pinWebAppToGroup(cBot, shopId);
                 await bot.answerCallbackQuery(cq.id, { text: "✅ PIN qilib qo'yildi!" });
             } catch (e) {
                 await bot.answerCallbackQuery(cq.id, { text: "❌ Xato: " + e.message });
@@ -880,45 +863,15 @@ function attachHandlers(bot, ctx) {
                     .lean();
                 const webappUrl = updatedShop.webappUrl;
 
-                // 4. Guruhga PIN — CASHBACK BOT orqali (main bot emas!)
-                // Haridorlar cashback botiga o'tadi, main botga emas
+                // 4. Guruhga PIN — CASHBACK BOT orqali
                 let pinMsgId = null;
-                let pinBotUsed = "main";
                 try {
-                    // Cashback bot bormi?
-                    const { getBot: getBotFn } = require("./botManager");
-                    // shopId ga bog'liq cashback botni topish
-                    const bots = getBotFn(shopId, "customer"); // customer bot
-                    const pinBot = bots || bot; // cashback bot bo'lmasa main bot
-
-                    const pinText = [
-                        `🛍 <b>${draft.siteName}</b>`,
-                        ``,
-                        `Mahsulotlarni ko'rish va buyurtma berish uchun`,
-                        `pastdagi tugmani bosing! 👇`,
-                        ``,
-                        `🎁 Xaridingizdan cashback bonus to'plang!`,
-                    ].join("\n");
-
-                    const pinMsg = await pinBot.sendMessage(orderChatId, pinText, {
-                        parse_mode: "HTML",
-                        reply_markup: {
-                            inline_keyboard: [[{
-                                text: `🛒 ${draft.siteName} — Xarid qilish`,
-                                web_app: { url: webappUrl },
-                            }]],
-                        }
-                    });
-
-                    pinMsgId = pinMsg?.message_id;
-
-                    if (pinMsgId) {
-                        await pinBot.pinChatMessage(orderChatId, pinMsgId, {
-                            disable_notification: false,
-                        }).catch(e => console.warn("[webapp] pin xato:", e.message));
-                    }
+                    // Shop yangilangandan keyin pinWebAppToGroup chaqiramiz
+                    // (webappUrl va webApp.orderChatId allaqachon saqlangan)
+                    const pinResult = await pinWebAppToGroup(cashbackBot, shopId);
+                    pinMsgId = pinResult?.messageId;
                 } catch (e) {
-                    console.error("[webapp] guruh xabar xato:", e.message);
+                    console.error("[webapp] PIN xato:", e.message);
                 }
 
                 // 6. Foydalanuvchiga tasdiq
