@@ -119,15 +119,7 @@ function parseSaleText(text) {
     }
     if (!items.length) return null;
 
-    // Telefon raqamni birinchi topilgandan olish
-    const phone = items.reduce((p, it) => p || it.phone, null);
-
-    // items dan phone olib tashlaymiz (u alohida)
-    const clean = items.map(({ phone: _, ...it }) => it);
-
-    // phone ni result ga biriktirish (doSaveSale uchun)
-    if (phone) clean._phone = phone;
-    return clean;
+    return items;
 }
 
 // Phone ni alohida olish

@@ -15,7 +15,6 @@ const { webappRoutes }   = require("./routes/webapp");
 const { billingRoutes }    = require("./routes/billing");
 const { onboardingRoutes } = require("./routes/onboarding");
 const { productRoutes }    = require("./routes/products");
-const { webappRoutes }     = require("./routes/webapp");
 const { startBillingScheduler } = require("./billing/billingNotifier");
 const { startBackupScheduler }  = require("./services/backupScheduler");
 const { adminRoutes }  = require("./routes/admin");
@@ -89,7 +88,6 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         app.use("/api/admin/billing", billingRoutes());
         app.use("/api/onboarding",      onboardingRoutes());  // PUBLIC
         app.use("/api",                 productRoutes());
-        app.use("/api/webapp",          webappRoutes());
 
         app.get("/health", (req, res) =>
             res.json({ ok: true, ts: Date.now(), service: "botpos-saas", uptime: process.uptime() })

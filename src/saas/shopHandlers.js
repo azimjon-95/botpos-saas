@@ -816,7 +816,7 @@ function attachHandlers(bot, ctx) {
                         // Pin ruxsatini tekshirish
                         const canPin = member?.can_pin_messages !== false;
                         if (!canPin) {
-                            adminError = "Bot admin, lekin "Pin messages" ruxsati yo'q.";
+                            adminError = "Bot admin, lekin 'Pin messages' ruxsati yo'q.";
                         } else {
                             botIsAdmin = true;
                         }
@@ -1153,8 +1153,6 @@ function attachHandlers(bot, ctx) {
         }
     });
 
-    });
-
     console.log(`[shopHandlers] ✅ Handler ulandi: ${ctx.shop?.name || shopId}`);
 }
 
@@ -1200,7 +1198,7 @@ async function handleAI(bot, chatId, shopId, msg, userMsg, sector, ctx, groupCha
     // ── SOTUV ──────────────────────────────────────────────────────────────
     if (parsed.type === "sale" && parsed.items?.length) {
         const prefix = fromVoice ? `🎤 <i>${userMsg}</i>\n` : "";
-        return doSaveSale(bot, chatId, shopId, msg, parsed.items, groupChatId, prefix, parsed.phone);
+        return doSaveSale(bot, chatId, shopId, msg, parsed.items, groupChatId, prefix, parsed.phone, ctx);
     }
 
     // ── CHIQIM ─────────────────────────────────────────────────────────────
@@ -1321,8 +1319,7 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
             const qty  = it.qty || 1;
             const sum  = qty * it.price;
             return `  ${it.name}${qty > 1 ? ` x${qty}` : ""}  —  ${formatMoney(sum)} so'm`;
-        }).join("
-");
+        }).join("\n");
 
         // To'lov holati
         let payStatus;
@@ -1347,8 +1344,7 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
             `💰 Jami:  <b>${formatMoney(total)}</b> so'm`,
             payStatus,
             phone ? `📞 Tel: ${phone}` : "",
-        ].filter(Boolean).join("
-");
+        ].filter(Boolean).join("\n");
 
         // Sotuvchiga
         await bot.sendMessage(chatId, chek, { parse_mode: "HTML" });
