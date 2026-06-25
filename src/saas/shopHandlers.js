@@ -570,21 +570,25 @@ function attachHandlers(bot, ctx) {
             if (!shopDoc?.webApp?.enabled) return;
             const orderChatId = shopDoc.webApp.orderChatId || groupChatId;
             try {
-                const pinMsg = await bot.sendMessage(orderChatId,
-                    `🛍 <b>${shopDoc.webApp.siteName || shopDoc.name}</b>\n\n` +
-                    `👇 Saytga kirish uchun bosing:`,
+                const { getBot: getBotFn } = require("./botManager");
+                const pinBot = getBotFn(shopId, "customer") || bot;
+                const shopName = shopDoc.webApp.siteName || shopDoc.name;
+                const pinMsg = await pinBot.sendMessage(orderChatId,
+                    `🛍 <b>${shopName}</b>\n\n` +
+                    `🎁 Xaridingizdan cashback bonus to'plang!\n\n` +
+                    `👇 Xarid qilish uchun bosing:`,
                     {
                         parse_mode: "HTML",
                         reply_markup: {
                             inline_keyboard: [[{
-                                text: `🛒 ${shopDoc.webApp.siteName || shopDoc.name}`,
+                                text: `🛒 ${shopName} — Xarid qilish`,
                                 web_app: { url: shopDoc.webappUrl },
                             }]],
                         }
                     }
                 );
                 if (pinMsg?.message_id) {
-                    await bot.pinChatMessage(orderChatId, pinMsg.message_id, {
+                    await pinBot.pinChatMessage(orderChatId, pinMsg.message_id, {
                         disable_notification: true,
                     }).catch(() => {});
                 }
@@ -876,23 +880,31 @@ function attachHandlers(bot, ctx) {
                     .lean();
                 const webappUrl = updatedShop.webappUrl;
 
-                // 4. Guruhga PIN xabar — rasmli, WebApp tugma bilan
+                // 4. Guruhga PIN — CASHBACK BOT orqali (main bot emas!)
+                // Haridorlar cashback botiga o'tadi, main botga emas
                 let pinMsgId = null;
+                let pinBotUsed = "main";
                 try {
+                    // Cashback bot bormi?
+                    const { getBot: getBotFn } = require("./botManager");
+                    // shopId ga bog'liq cashback botni topish
+                    const bots = getBotFn(shopId, "customer"); // customer bot
+                    const pinBot = bots || bot; // cashback bot bo'lmasa main bot
+
                     const pinText = [
                         `🛍 <b>${draft.siteName}</b>`,
                         ``,
-                        `Bugungi tushum, chiqim va balans holatini`,
-                        `onlayn kuzatib boring.`,
+                        `Mahsulotlarni ko'rish va buyurtma berish uchun`,
+                        `pastdagi tugmani bosing! 👇`,
                         ``,
-                        `👇 Pastdagi tugmani bosing:`,
+                        `🎁 Xaridingizdan cashback bonus to'plang!`,
                     ].join("\n");
 
-                    const pinMsg = await bot.sendMessage(orderChatId, pinText, {
+                    const pinMsg = await pinBot.sendMessage(orderChatId, pinText, {
                         parse_mode: "HTML",
                         reply_markup: {
                             inline_keyboard: [[{
-                                text: `🛒 ${draft.siteName} — Buyurtma berish`,
+                                text: `🛒 ${draft.siteName} — Xarid qilish`,
                                 web_app: { url: webappUrl },
                             }]],
                         }
@@ -900,9 +912,8 @@ function attachHandlers(bot, ctx) {
 
                     pinMsgId = pinMsg?.message_id;
 
-                    // 5. Avtomatik PIN qilish
                     if (pinMsgId) {
-                        await bot.pinChatMessage(orderChatId, pinMsgId, {
+                        await pinBot.pinChatMessage(orderChatId, pinMsgId, {
                             disable_notification: false,
                         }).catch(e => console.warn("[webapp] pin xato:", e.message));
                     }
@@ -1181,7 +1192,7 @@ function attachHandlers(bot, ctx) {
             // 1. Tez regex parser (0 token)
             const quickItems = parseSaleText(text);
             if (quickItems?.length) {
-                return doSaveSale(bot, chatId, shopId, msg, quickItems, groupChatId);
+                return doSaveSale(bot, chatId, shopId, msg, quickItems, groupChatId, '', null, ctx);
             }
 
             // 2. shopChat — soha + katalog kontekst bilan
@@ -1288,7 +1299,7 @@ async function handleAI(bot, chatId, shopId, msg, userMsg, sector, ctx, groupCha
 }
 
 // ─── doSaveSale — sotuvni DB ga saqlash + chek chiqarish ────────────────────
-async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix = "", phone = null) {
+async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix = "", phone = null, ctx = null) {
     const { mongoose } = require("../db");
     const Sale    = require("../models/Sale");
     const Debt    = require("../models/Debt");
