@@ -22,7 +22,7 @@ function billingRoutes() {
         try {
             const stats = await getBillingStats();
             res.json({ ok: true, data: stats });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── BARCHA DO'KONLAR BILLING HOLATI ────────────────────────────────────
@@ -51,7 +51,7 @@ function billingRoutes() {
             }));
 
             res.json({ ok: true, data: { shops: result, total, page: +page } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── DO'KON BILLING MA'LUMOTI ────────────────────────────────────────────
@@ -74,7 +74,7 @@ function billingRoutes() {
                     ? Math.ceil((new Date(shop.billing.nextPaymentDate) - Date.now()) / 86400000)
                     : null,
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── DO'KON BILLING SOZLAMALARINI O'ZGARTIRISH ──────────────────────────
@@ -97,7 +97,7 @@ function billingRoutes() {
             if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
 
             res.json({ ok: true, data: { shop, monthlyPrice: calcMonthlyPrice(shop) } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── TO'LOV QABUL QILISH ─────────────────────────────────────────────────
@@ -126,7 +126,7 @@ function billingRoutes() {
             });
 
             res.json({ ok: true, data: result });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── GRACE BERISH (qarzga ishlashga ruxsat) ──────────────────────────────
@@ -140,7 +140,7 @@ function billingRoutes() {
                 shopId: req.params.id, details: { note }, ip: req.ip,
             });
             res.json({ ok: true, message: "Grace berildi — do'kon ishlashda davom etadi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── GRACE BEKOR QILISH ───────────────────────────────────────────────────
@@ -149,7 +149,7 @@ function billingRoutes() {
         try {
             await removeGrace(req.params.id);
             res.json({ ok: true, message: "Grace bekor qilindi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── QO'LDA BLOKLASH ─────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ function billingRoutes() {
                 shopId: req.params.id, ip: req.ip,
             });
             res.json({ ok: true, message: "Do'kon bloklandi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── TO'LOV TARIXI ───────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ function billingRoutes() {
         try {
             const history = await getPaymentHistory(req.params.id, 24);
             res.json({ ok: true, data: history });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── TARIF NARXLARI ──────────────────────────────────────────────────────

@@ -63,7 +63,7 @@ function productRoutes() {
                 grouped[p.category].items.push(p);
             }
             res.json({ ok: true, data: { grouped, flat: products, total: products.length } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/shops/:shopId/products — yangi mahsulot
@@ -82,7 +82,7 @@ function productRoutes() {
                 sortOrder: Number(sortOrder) || 0,
             });
             res.status(201).json({ ok: true, data: product });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // PUT /api/admin/shops/:shopId/products/:id — tahrirlash
@@ -98,7 +98,7 @@ function productRoutes() {
             );
             if (!p) return res.status(404).json({ ok: false, error: "Topilmadi" });
             res.json({ ok: true, data: p });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // DELETE /api/admin/shops/:shopId/products/:id
@@ -106,7 +106,7 @@ function productRoutes() {
         try {
             await Product.deleteOne({ _id: req.params.id, shopId: req.params.shopId });
             res.json({ ok: true, message: "O'chirildi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/shops/:shopId/products/seed — default mahsulotlarni yuklash
@@ -125,7 +125,7 @@ function productRoutes() {
             }
             await Product.insertMany(docs);
             res.json({ ok: true, data: { count: docs.length, message: "Default mahsulotlar yuklandi" } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ═══ WEBAPP ENDPOINTS (shopGuard + Telegram auth) ════════════════════════
@@ -146,7 +146,7 @@ function productRoutes() {
                 });
             }
             res.json({ ok: true, data: Object.values(grouped) });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     return r;

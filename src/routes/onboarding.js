@@ -142,7 +142,7 @@ function onboardingRoutes() {
                 nextStep: "Telegram orqali bot tokenlarini yuboring va aktivlashtiring.",
             }});
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 
@@ -177,7 +177,7 @@ function onboardingRoutes() {
                 }[shop.status] || "Noma'lum holat",
             }});
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 

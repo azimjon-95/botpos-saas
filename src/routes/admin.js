@@ -69,7 +69,7 @@ function adminRoutes() {
 
             res.json({ ok: true, data: { token, refresh, is2FAEnabled: admin.is2FAEnabled } });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 
@@ -97,7 +97,7 @@ function adminRoutes() {
             await admin.save();
 
             res.json({ ok: true, data: { otpauth_url: secret.otpauth_url, base32: secret.base32 } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/2fa/enable { totpToken }
@@ -115,7 +115,7 @@ function adminRoutes() {
             admin.is2FAEnabled = true;
             await admin.save();
             res.json({ ok: true, message: "2FA yoqildi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── BARCHA QUYIDAGI ENDPOINTLAR JWT TALAB ────────────────────────────
@@ -152,7 +152,7 @@ function adminRoutes() {
             }));
 
             res.json({ ok: true, data: { shops: result, total, page: +page, limit: +limit } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // GET /api/admin/shops/:id
@@ -161,7 +161,7 @@ function adminRoutes() {
             const shop = await Shop.findById(req.params.id).select(HIDE).lean();
             if (!shop) return res.status(404).json({ ok: false, error: "Topilmadi" });
             res.json({ ok: true, data: shop });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/shops
@@ -230,7 +230,7 @@ function adminRoutes() {
                 shopId: shop._id, name,
                 webappUrl: `${WEBAPP_BASE_URL}?shop=${shop._id}`,
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // PUT /api/admin/shops/:id
@@ -259,7 +259,7 @@ function adminRoutes() {
             await audit(req.adminEmail, "shop.edit", shop._id, shop.name, Object.keys(update), req.ip);
 
             res.json({ ok: true, data: shop });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // DELETE /api/admin/shops/:id (FIX #1)
@@ -273,7 +273,7 @@ function adminRoutes() {
             await audit(req.adminEmail, "shop.delete", req.params.id, shop.name, {}, req.ip);
 
             res.json({ ok: true, message: "Do'kon o'chirildi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // PATCH /api/admin/shops/:id/toggle
@@ -300,7 +300,7 @@ function adminRoutes() {
                 shop._id, shop.name, {}, req.ip);
 
             res.json({ ok: true, data: { isActive: newActive } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/shops/:id/restart
@@ -309,7 +309,7 @@ function adminRoutes() {
             await reloadShop(req.params.id);
             await audit(req.adminEmail, "shop.restart", req.params.id, "", {}, req.ip);
             res.json({ ok: true, message: "Bot restart qilindi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ═══ WORKERS (FIX #2) ════════════════════════════════════════════════════
@@ -320,7 +320,7 @@ function adminRoutes() {
             const workers = await Worker.find({ shopId: req.params.id })
                 .sort({ createdAt: -1 }).lean();
             res.json({ ok: true, data: workers });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/shops/:id/workers
@@ -343,7 +343,7 @@ function adminRoutes() {
         } catch (e) {
             if (e.code === 11000)
                 return res.status(409).json({ ok: false, error: "Bu xodim allaqachon qo'shilgan" });
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 
@@ -361,7 +361,7 @@ function adminRoutes() {
             );
             if (!worker) return res.status(404).json({ ok: false, error: "Topilmadi" });
             res.json({ ok: true, data: worker });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // DELETE /api/admin/shops/:id/workers/:wId
@@ -370,7 +370,7 @@ function adminRoutes() {
             const result = await Worker.deleteOne({ _id: req.params.wId, shopId: req.params.id });
             if (!result.deletedCount) return res.status(404).json({ ok: false, error: "Topilmadi" });
             res.json({ ok: true, message: "Xodim o'chirildi" });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ═══ CUSTOMERS (FIX #3) ══════════════════════════════════════════════════
@@ -391,7 +391,7 @@ function adminRoutes() {
                 Customer.countDocuments(filter),
             ]);
             res.json({ ok: true, data: { customers, total, page: +page } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // PATCH /api/admin/shops/:id/customers/:cId/block
@@ -408,7 +408,7 @@ function adminRoutes() {
                 req.params.id, "", { tgId: customer.tgId }, req.ip);
 
             res.json({ ok: true, data: { isBlocked: customer.isBlocked } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ═══ STATS & AUDIT ═══════════════════════════════════════════════════════
@@ -427,7 +427,7 @@ function adminRoutes() {
                 plans: { starter, pro, business },
                 botsRunning: getStatus().length,
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     r.get("/audit", async (req, res) => {
@@ -437,7 +437,7 @@ function adminRoutes() {
                 .sort({ createdAt: -1 })
                 .skip((+page - 1) * +limit).limit(+limit).lean();
             res.json({ ok: true, data: logs });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
 
@@ -480,7 +480,7 @@ function adminRoutes() {
 
             res.json({ ok: true, data: { shopId: shop._id, status: "active",
                 webappUrl: shop.webappUrl, message: "Do'kon aktivlashtirildi, bot ishga tushdi" } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── PENDING DO'KONLAR RO'YXATI ──────────────────────────────────────────
@@ -490,7 +490,7 @@ function adminRoutes() {
             const shops = await Shop.find({ status: "pending" })
                 .select(HIDE).sort({ createdAt: -1 }).lean();
             res.json({ ok: true, data: { shops, total: shops.length } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
 
@@ -539,7 +539,7 @@ function adminRoutes() {
                     : "Bepul (Business tarifi)",
                 url: shop.webappUrl || `${WEBAPP_BASE_URL}?shop=${shop._id}`,
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // POST /api/admin/shops/:id/webapp/disable — o'chirish + billing kamaytirish
@@ -561,7 +561,7 @@ function adminRoutes() {
 
             await audit(req.adminEmail, "webapp.disable", req.params.id, shop.name, {}, req.ip);
             res.json({ ok: true, message: "Web App o'chirildi", webFee });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // GET /api/admin/webapp/pricing — WebApp narxlari
@@ -589,7 +589,7 @@ function adminRoutes() {
                 Order.countDocuments(filter),
             ]);
             res.json({ ok: true, data: { orders, total } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     r.get("/bots/status", (req, res) => {
@@ -637,7 +637,7 @@ function adminRoutes() {
                 }
             });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 
@@ -647,7 +647,7 @@ function adminRoutes() {
             const result = await manualBackup();
             res.json({ ok: result.ok, data: result });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 
@@ -672,7 +672,7 @@ function adminRoutes() {
                 message: `Jami: ${shops} do'kon, ${sales} sotuv, ${expenses} chiqim`,
             }});
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message });
         }
     });
 
@@ -703,7 +703,7 @@ function adminRoutes() {
                 limit:      shop.aiConfig?.monthlyTokenLimit || 50000,
                 remaining:  Math.max(0, (shop.aiConfig?.monthlyTokenLimit || 50000) - (shop.aiUsage?.thisMonthTokens || 0)),
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── AI TOKEN SARFI ────────────────────────────────────────────────────
@@ -734,7 +734,7 @@ function adminRoutes() {
                 })).sort((a, b) => b.totalTokens - a.totalTokens),
             };
             res.json({ ok: true, data });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     return r;

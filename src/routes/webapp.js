@@ -7,6 +7,7 @@ const Product = require("../models/Product");
 const Order   = require("../models/Order");
 const { getCatalog } = require("../services/catalogCache");
 const { getBot }     = require("../saas/botManager");
+const { adminAuth }  = require("../middlewares/adminAuth");
 const { formatMoney } = require("../utils/money");
 
 function webappRoutes() {
@@ -43,7 +44,7 @@ function webappRoutes() {
                     themeKey: shop.webApp?.theme?.themeKey || "dark",
                 },
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── KATALOG ──────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ function webappRoutes() {
         try {
             const catalog = await getCatalog(req.params.shopId);
             res.json({ ok: true, data: catalog });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── MAHSULOT ─────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ function webappRoutes() {
             }).lean();
             if (!p) return res.status(404).json({ ok: false, error: "Topilmadi" });
             res.json({ ok: true, data: p });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── BUYURTMA BERISH ──────────────────────────────────────────────────────
@@ -80,6 +81,22 @@ function webappRoutes() {
                 return res.status(400).json({ ok: false, error: "Ism va telefon kerak" });
             if (!items?.length)
                 return res.status(400).json({ ok: false, error: "Mahsulot tanlanmagan" });
+
+            // Telefon format tekshiruvi (O'zbekiston: +998 yoki 998 bilan boshlanadi)
+            const phone = String(clientPhone).replace(/\s/g, "");
+            if (!/^(\+?998)?[0-9]{9}$/.test(phone)) {
+                return res.status(400).json({ ok: false, error: "Telefon raqam noto'g'ri (998901234567)" });
+            }
+
+            // Ism uzunligi
+            if (clientName.trim().length < 2 || clientName.trim().length > 80) {
+                return res.status(400).json({ ok: false, error: "Ism 2-80 belgi bo'lishi kerak" });
+            }
+
+            // Items soni cheklov (spam himoya)
+            if (items.length > 50) {
+                return res.status(400).json({ ok: false, error: "Maksimal 50 ta mahsulot" });
+            }
 
             const shop = await Shop.findById(shopId).lean();
             if (!shop?.webApp?.enabled)
@@ -118,7 +135,7 @@ function webappRoutes() {
                 total,
                 message: "Buyurtmangiz qabul qilindi! Tez orada bog'lanamiz.",
             }});
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── BANNER YANGILASH (do'kon egasi) ─────────────────────────────────────
@@ -128,12 +145,12 @@ function webappRoutes() {
             const { bannerUrl } = req.body;
             await Shop.updateOne({ _id: req.params.shopId }, { "webApp.bannerUrl": bannerUrl || "" });
             res.json({ ok: true });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     // ─── BUYURTMALAR RO'YXATI (do'kon egasi) ─────────────────────────────────
     // GET /api/webapp/:shopId/orders
-    r.get("/:shopId/orders", async (req, res) => {
+    r.get("/:shopId/orders", adminAuth, async (req, res) => {
         try {
             const { page = 1, limit = 20, status } = req.query;
             const filter = { shopId: req.params.shopId };
@@ -145,11 +162,11 @@ function webappRoutes() {
                 Order.countDocuments(filter),
             ]);
             res.json({ ok: true, data: { orders, total } });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
-    // PATCH /api/webapp/:shopId/orders/:id/status
-    r.patch("/:shopId/orders/:id/status", async (req, res) => {
+    // PATCH /api/webapp/:shopId/orders/:id/status (FAQAT ADMIN)
+    r.patch("/:shopId/orders/:id/status", adminAuth, async (req, res) => {
         try {
             const { status } = req.body;
             const order = await Order.findOneAndUpdate(
@@ -158,7 +175,7 @@ function webappRoutes() {
             );
             if (!order) return res.status(404).json({ ok: false, error: "Topilmadi" });
             res.json({ ok: true, data: order });
-        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+        } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
     return r;
