@@ -505,6 +505,31 @@ function attachHandlers(bot, ctx) {
         if (!(await isAuthed(shopId, userId))) return;
 
 
+        // ── SOTUV O'CHIRISH ───────────────────────────────────────────────────
+        if (data.startsWith("sale_delete:")) {
+            const saleId = data.replace("sale_delete:", "");
+            // Sabab so'rash
+            await setMode(shopId, userId, `sale_delete_reason:${saleId}`);
+            await bot.answerCallbackQuery(cq.id);
+            return bot.sendMessage(chatId,
+                `🗑 <b>Sotuv o'chirish</b>\n\nSababni yozing:\n` +
+                `<i>Masalan: Hato kiritildi, Mijoz qaytardi</i>`,
+                {
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: "❌ Hato kiritildi" }],
+                            [{ text: "↩️ Mijoz qaytardi" }],
+                            [{ text: "📝 Boshqa sabab" }],
+                            [{ text: "🚫 Bekor" }],
+                        ],
+                        resize_keyboard: true,
+                        one_time_keyboard: true,
+                    }
+                }
+            );
+        }
+
         // Buyurtma tasdiqlash/bekor
         if (data.startsWith("order_confirm:") || data.startsWith("order_cancel:")) {
             const Order  = require("../models/Order");
@@ -915,6 +940,72 @@ function attachHandlers(bot, ctx) {
                         }
                     }
                 );
+            }
+            return;
+        }
+
+        // ── SOTUV O'CHIRISH — SABAB ─────────────────────────────────────────
+        if (mode?.startsWith("sale_delete_reason:")) {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ O'chirish bekor qilindi.",
+                    { reply_markup: mainMenu(hasWebApp) });
+            }
+
+            const saleId = mode.replace("sale_delete_reason:", "");
+            const sabab  = text === "📝 Boshqa sabab" ? "Boshqa sabab" : text.replace(/^[❌↩️📝]\s*/, "").trim();
+
+            const Sale = require("../models/Sale");
+            const sale = await Sale.findOne({ _id: saleId, shopId }).lean();
+            if (!sale) {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Sotuv topilmadi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+
+            // Balansdan ayirish
+            const Counter = require("../models/Counter");
+            const Debt    = require("../models/Debt");
+            await Counter.findOneAndUpdate(
+                { shopId, key: "balance" },
+                { $inc: { value: -(sale.paidTotal || 0) } },
+                { upsert: true }
+            );
+            // Bog'liq qarzni ham o'chirish
+            await Debt.deleteMany({ saleId: sale._id });
+            // Sotuvni o'chirish
+            await Sale.deleteOne({ _id: sale._id });
+
+            await setMode(shopId, userId, null);
+
+            const { formatMoney } = require("../utils/money");
+            const itemsLine = (sale.items || []).map(it =>
+                `${it.name} x${it.qty||1} (${formatMoney((it.qty||1)*it.price)})`
+            ).join(", ");
+
+            // Sotuvchiga: o'chirildi xabari
+            const dayjs = require("dayjs");
+            const vaqt  = dayjs().tz ? dayjs().tz("Asia/Tashkent").format("DD.MM.YYYY HH:mm") : dayjs().format("DD.MM.YYYY HH:mm");
+
+            await bot.sendMessage(chatId,
+                `🗑 <b>SOTUV O'CHIRILDI</b>\n\n` +
+                `🆔 ID: ${sale.orderNo?.replace("#","")||"—"}\n` +
+                `👤 Sotuvchi: <b>${sale.seller?.tgName||"—"}</b>\n` +
+                `💰 Tushgan: <b>${formatMoney(sale.paidTotal||0)} so'm</b>\n` +
+                `📝 Sabab: <b>${sabab}</b>`,
+                { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) }
+            );
+
+            // Guruhga: o'chirildi
+            if (groupChatId) {
+                bot.sendMessage(groupChatId,
+                    `🗑 <b>SOTUV O'CHIRILDI</b>\n\n` +
+                    `🆔 ID: ${sale.orderNo?.replace("#","")||"—"}\n` +
+                    `👤 Sotuvchi: <b>${sale.seller?.tgName||"—"}</b>\n` +
+                    `💰 Tushgan: <b>${formatMoney(sale.paidTotal||0)} so'm</b>\n` +
+                    `🧾 Sabab: <b>${sabab}</b>\n` +
+                    `🕐 ${vaqt}`,
+                    { parse_mode: "HTML" }
+                ).catch(() => {});
             }
             return;
         }
@@ -1335,46 +1426,72 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
         // ─── CHEK XABARI ──────────────────────────────────────────────────
         const now   = dayjs().tz ? dayjs().tz("Asia/Tashkent") : dayjs();
         const vaqt  = now.format("DD.MM.YYYY HH:mm");
-        const lines = items.map(it => {
-            const qty  = it.qty || 1;
-            const sum  = qty * it.price;
-            return `  ${it.name}${qty > 1 ? ` x${qty}` : ""}  —  ${formatMoney(sum)} so'm`;
-        }).join("\n");
+        const { WEBAPP_BASE_URL } = require("../config");
+
+        // Mahsulotlar qatori
+        const itemsLine = items.map(it => {
+            const qty = it.qty || 1;
+            const sum = qty * it.price;
+            return `${it.name} x${qty} (${formatMoney(sum)})`;
+        }).join(", ");
 
         // To'lov holati
-        let payStatus;
+        let payStatus, payEmoji;
         if (debtTotal === 0) {
-            payStatus = `✅ To'liq to'landi`;
+            payStatus = `${formatMoney(paidTotal)} so'm`;
+            payEmoji  = "✅";
         } else if (paidTotal === 0) {
-            payStatus = `📌 Nasiya — ${formatMoney(debtTotal)} so'm`;
+            payStatus = `Nasiya`;
+            payEmoji  = "📌";
         } else {
-            payStatus = `💳 Qisman: to'landi ${formatMoney(paidTotal)}, qarz ${formatMoney(debtTotal)} so'm`;
+            payStatus = `${formatMoney(paidTotal)} so'm (qarz: ${formatMoney(debtTotal)})`;
+            payEmoji  = "💳";
         }
 
-        // Chek matni
-        const sep = "─".repeat(28);
-        const chek = [
-            prefix,
-            `🧾 <b>CHEK ${orderNo}</b>`,
-            `📅 ${vaqt}`,
-            `👤 ${seller.tgName}`,
-            sep,
-            lines,
-            sep,
-            `💰 Jami:  <b>${formatMoney(total)}</b> so'm`,
-            payStatus,
+        // ── SOTUVCHIGA: qisqa xabar + inline tugmalar ──────────────────────
+        const shortMsg = [
+            `✅ <b>SOTUV</b>`,
+            ``,
+            `🆔 ID: ${orderNo.replace("#", "")}`,
+            `👤 Sotuvchi: ${seller.tgName}`,
+            `🧾 Items: ${itemsLine}`,
+            `💰 Tushgan: <b>${formatMoney(paidTotal)} so'm</b>`,
+            debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(debtTotal)} so'm</b>` : "",
             phone ? `📞 Tel: ${phone}` : "",
+            `🕐 ${vaqt}`,
         ].filter(Boolean).join("\n");
 
-        // Sotuvchiga — chek + darhol menyu qaytadi
-        await bot.sendMessage(chatId, chek, {
+        // Chekni ko'rish uchun WebApp URL
+        const checkUrl = `${WEBAPP_BASE_URL}/check?id=${sale._id}&shop=${shopId}`;
+
+        const inlineKb = { inline_keyboard: [
+            [{ text: "🧾 Chekni chop etish", web_app: { url: checkUrl } }],
+            [{ text: "🗑 O'chirish (Sotuv)", callback_data: `sale_delete:${sale._id}` }],
+        ]};
+
+        await bot.sendMessage(chatId, shortMsg, {
             parse_mode: "HTML",
+            reply_markup: inlineKb,
+        });
+
+        // Asosiy menyu qaytadi (alohida xabar)
+        await bot.sendMessage(chatId, "➕ Keyingi sotuv:", {
             reply_markup: mainMenu(!!ctx?.shop?.webApp?.enabled),
         });
 
-        // Guruhga — faqat chek (keyboard yo'q)
+        // ── GURUHGA: to'liq sotuv xabari ───────────────────────────────────
         if (groupChatId) {
-            bot.sendMessage(groupChatId, chek, { parse_mode: "HTML" }).catch(() => {});
+            const groupMsg = [
+                `✅ <b>SOTUV</b>`,
+                ``,
+                `👤 Sotuvchi: <b>${seller.tgName}</b>`,
+                `🧾 Items: ${itemsLine}`,
+                `💰 Tushgan: <b>${formatMoney(paidTotal)} so'm</b>`,
+                debtTotal > 0 ? `📌 Qarz: <b>${formatMoney(debtTotal)} so'm</b>` : "",
+                phone ? `📞 Tel: ${phone}` : "",
+                `🕐 ${vaqt}`,
+            ].filter(Boolean).join("\n");
+            bot.sendMessage(groupChatId, groupMsg, { parse_mode: "HTML" }).catch(() => {});
         }
 
     } catch (e) {

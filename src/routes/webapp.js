@@ -56,6 +56,20 @@ function webappRoutes() {
         } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
+    // ─── CHEK — sotuv ma'lumotlari ──────────────────────────────────────────
+    // GET /api/webapp/:shopId/sale/:saleId
+    r.get("/:shopId/sale/:saleId", async (req, res) => {
+        try {
+            const Sale = require("../models/Sale");
+            const sale = await Sale.findOne({
+                _id:    req.params.saleId,
+                shopId: req.params.shopId,
+            }).lean();
+            if (!sale) return res.status(404).json({ ok: false, error: "Chek topilmadi" });
+            res.json({ ok: true, data: sale });
+        } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    });
+
     // ─── MAHSULOT ─────────────────────────────────────────────────────────────
     // GET /api/webapp/:shopId/products/:id
     r.get("/:shopId/products/:id", async (req, res) => {
