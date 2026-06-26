@@ -38,6 +38,19 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         app.use(express.json({ limit: "1mb" }));
 
         // ─── HELMET — HTTP Security Headers ───────────────────────────────────
+        // Redis xatolarini global handle qilish (ECONNREFUSED)
+        process.on("unhandledRejection", (err) => {
+            if (err?.code === "ECONNREFUSED" || err?.name === "AggregateError") {
+                // Redis yo'q — ogohlantirib o'tamiz
+                if (!process.env._REDIS_WARNED) {
+                    process.env._REDIS_WARNED = "1";
+                    console.warn("[Redis] Ulanib bo'lmadi — Redis ishlamayapti (ixtiyoriy)");
+                }
+                return;
+            }
+            console.error("Unhandled rejection:", err);
+        });
+
         // ─── 1. CORS — eng birinchi (helmet dan OLDIN) ───────────────────────
         // OPTIONS preflight helmet dan oldin o'tishi kerak
         const ALLOWED_ORIGINS = [
@@ -77,8 +90,9 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         // ─── 3. MONGO SANITIZE ────────────────────────────────────────────────
         app.use((req, _res, next) => {
             if (req.body)   req.body   = mongoSanitize(req.body);
-            if (req.query)  req.query  = mongoSanitize(req.query);
-            if (req.params) req.params = mongoSanitize(req.params);
+            // req.query — getter only, Object.assign ishlatamiz
+            if (req.query)  Object.assign(req.query,  mongoSanitize(req.query));
+            if (req.params) Object.assign(req.params, mongoSanitize(req.params));
             next();
         });
 

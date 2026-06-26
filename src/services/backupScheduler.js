@@ -23,7 +23,12 @@ async function loadState() {
         const Redis = require("ioredis");
         const { REDIS_URL } = require("../config");
         if (!REDIS_URL) return;
-        const r = new Redis(REDIS_URL, { maxRetriesPerRequest: 1, retryStrategy: () => null });
+        const r = new Redis(REDIS_URL, {
+                maxRetriesPerRequest: 0,
+                retryStrategy: () => null,
+                lazyConnect: true,
+                enableOfflineQueue: false,
+            });
         const raw = await r.get("backup:state").catch(() => null);
         if (raw) _state = { ..._state, ...JSON.parse(raw) };
         await r.quit().catch(() => {});
@@ -36,7 +41,12 @@ async function saveState() {
         const Redis = require("ioredis");
         const { REDIS_URL } = require("../config");
         if (!REDIS_URL) return;
-        const r = new Redis(REDIS_URL, { maxRetriesPerRequest: 1, retryStrategy: () => null });
+        const r = new Redis(REDIS_URL, {
+                maxRetriesPerRequest: 0,
+                retryStrategy: () => null,
+                lazyConnect: true,
+                enableOfflineQueue: false,
+            });
         await r.set("backup:state", JSON.stringify(_state), "EX", 60 * 60 * 48).catch(() => {});
         await r.quit().catch(() => {});
     } catch {}

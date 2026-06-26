@@ -44,10 +44,12 @@ function getRedis() {
     if (!Redis || !REDIS_URL) return null;
     if (!_redis) {
         _redis = new Redis(REDIS_URL, {
-            maxRetriesPerRequest: 2,
-            retryStrategy: t => Math.min(t * 500, 5000),
+            maxRetriesPerRequest: 0,
+            retryStrategy:        () => null,  // qayta ulanmaydi
+            lazyConnect:          true,
+            enableOfflineQueue:   false,
         });
-        _redis.on("error", e => console.error("[redis]", e.message));
+        _redis.on("error", () => {}); // ECONNREFUSED ni suppress qilamiz
     }
     return _redis;
 }
