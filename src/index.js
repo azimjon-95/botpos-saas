@@ -38,47 +38,49 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         app.use(express.json({ limit: "1mb" }));
 
         // ─── HELMET — HTTP Security Headers ───────────────────────────────────
-        app.use(helmet({
-            contentSecurityPolicy: {
-                directives: {
-                    defaultSrc:  ["'self'"],
-                    scriptSrc:   ["'self'", "https://telegram.org"],
-                    connectSrc:  ["'self'", "https://api.telegram.org"],
-                    imgSrc:      ["'self'", "data:", "https:"],
-                    styleSrc:    ["'self'", "'unsafe-inline'"],
-                    frameSrc:    ["https://telegram.org"],
-                },
-            },
-            crossOriginEmbedderPolicy: false, // Telegram WebApp uchun
-        }));
-
-        // ─── MONGO SANITIZE — NoSQL Injection himoya ──────────────────────────
-        app.use((req, _res, next) => {
-            if (req.body)   req.body   = mongoSanitize(req.body);
-            if (req.query)  req.query  = mongoSanitize(req.query);
-            if (req.params) req.params = mongoSanitize(req.params);
-            next();
-        });
-
-        // CORS
-        // CORS — ruxsat etilgan originlar
+        // ─── 1. CORS — eng birinchi (helmet dan OLDIN) ───────────────────────
+        // OPTIONS preflight helmet dan oldin o'tishi kerak
         const ALLOWED_ORIGINS = [
             "http://localhost:3000",
             "http://localhost:3001",
+            "http://localhost:3002",
             "https://botpos.vercel.app",
             WEBAPP_BASE_URL,
         ].filter(Boolean);
 
         app.use(cors({
             origin: (origin, cb) => {
-                if (!origin) return cb(null, true);  // Postman, curl
+                if (!origin) return cb(null, true);  // Postman, curl, server-side
                 const ok = ALLOWED_ORIGINS.some(o => origin.startsWith(o))
-                        || origin.endsWith(".vercel.app");
+                        || origin.endsWith(".vercel.app")
+                        || origin.startsWith("http://localhost");
                 if (ok) return cb(null, true);
                 cb(new Error("CORS BLOCKED: " + origin));
             },
             credentials: true,
+            methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+            allowedHeaders: ["Content-Type","Authorization"],
         }));
+
+        // OPTIONS preflight — darhol 200 qaytarsin
+        app.options("*", cors());
+
+        // ─── 2. HELMET — CORS dan keyin ───────────────────────────────────────
+        app.use(helmet({
+            // API server — CSP kerak emas (React SPA uni boshqaradi)
+            contentSecurityPolicy: false,
+            // Telegram WebApp uchun
+            crossOriginEmbedderPolicy: false,
+            crossOriginResourcePolicy: false,
+        }));
+
+        // ─── 3. MONGO SANITIZE ────────────────────────────────────────────────
+        app.use((req, _res, next) => {
+            if (req.body)   req.body   = mongoSanitize(req.body);
+            if (req.query)  req.query  = mongoSanitize(req.query);
+            if (req.params) req.params = mongoSanitize(req.params);
+            next();
+        });
 
         // Rate limiting (TZ 7 — 100 req/min)
         const apiLimiter = rateLimit({
