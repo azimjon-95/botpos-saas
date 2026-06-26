@@ -76,7 +76,7 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         }));
 
         // OPTIONS preflight — darhol 200 qaytarsin
-        app.options("*", cors());
+        app.options("(.*)", cors());
 
         // ─── 2. HELMET — CORS dan keyin ───────────────────────────────────────
         app.use(helmet({
