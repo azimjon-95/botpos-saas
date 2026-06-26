@@ -128,7 +128,11 @@ function adminRoutes() {
         try {
             const { page = 1, limit = 20, search, plan, isActive } = req.query;
             const filter = {};
-            if (search)   filter.name     = { $regex: search, $options: "i" };
+            if (search) {
+                // ReDoS himoya: maxsus belgilarni escape qilamiz
+                const escaped = String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").slice(0, 50);
+                filter.name   = { $regex: escaped, $options: "i" };
+            }
             if (plan)     filter.plan     = plan;
             if (isActive !== undefined) filter.isActive = isActive === "true";
 
@@ -376,7 +380,10 @@ function adminRoutes() {
         try {
             const { page = 1, limit = 20, search } = req.query;
             const filter = { shopId: req.params.id };
-            if (search) filter.tgName = { $regex: search, $options: "i" };
+            if (search) {
+                const escaped = String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").slice(0, 50);
+                filter.tgName = { $regex: escaped, $options: "i" };
+            }
 
             const [customers, total] = await Promise.all([
                 Customer.find(filter).sort({ points: -1 })

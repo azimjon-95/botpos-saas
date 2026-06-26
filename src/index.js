@@ -5,6 +5,8 @@ require("dotenv").config();
 const express   = require("express");
 const http      = require("http");
 const cors      = require("cors");
+const helmet    = require("helmet");
+const mongoSanitize = require("mongo-sanitize");
 const rateLimit = require("express-rate-limit");
 const dns       = require("dns");
 dns.setDefaultResultOrder("ipv4first");
@@ -34,6 +36,29 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         const app = express();
         app.set("trust proxy", 1);
         app.use(express.json({ limit: "1mb" }));
+
+        // ─── HELMET — HTTP Security Headers ───────────────────────────────────
+        app.use(helmet({
+            contentSecurityPolicy: {
+                directives: {
+                    defaultSrc:  ["'self'"],
+                    scriptSrc:   ["'self'", "https://telegram.org"],
+                    connectSrc:  ["'self'", "https://api.telegram.org"],
+                    imgSrc:      ["'self'", "data:", "https:"],
+                    styleSrc:    ["'self'", "'unsafe-inline'"],
+                    frameSrc:    ["https://telegram.org"],
+                },
+            },
+            crossOriginEmbedderPolicy: false, // Telegram WebApp uchun
+        }));
+
+        // ─── MONGO SANITIZE — NoSQL Injection himoya ──────────────────────────
+        app.use((req, _res, next) => {
+            if (req.body)   req.body   = mongoSanitize(req.body);
+            if (req.query)  req.query  = mongoSanitize(req.query);
+            if (req.params) req.params = mongoSanitize(req.params);
+            next();
+        });
 
         // CORS
         // CORS — ruxsat etilgan originlar
