@@ -1366,10 +1366,13 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
             phone ? `📞 Tel: ${phone}` : "",
         ].filter(Boolean).join("\n");
 
-        // Sotuvchiga
-        await bot.sendMessage(chatId, chek, { parse_mode: "HTML" });
+        // Sotuvchiga — chek + darhol menyu qaytadi
+        await bot.sendMessage(chatId, chek, {
+            parse_mode: "HTML",
+            reply_markup: mainMenu(!!ctx?.shop?.webApp?.enabled),
+        });
 
-        // Guruhga
+        // Guruhga — faqat chek (keyboard yo'q)
         if (groupChatId) {
             bot.sendMessage(groupChatId, chek, { parse_mode: "HTML" }).catch(() => {});
         }
