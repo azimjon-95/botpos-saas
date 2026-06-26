@@ -13,6 +13,24 @@ const { getSectorList }   = require("../services/shopAI");
 
 function onboardingRoutes() {
     const r = express.Router();
+    const rateLimit = require("express-rate-limit");
+
+    // K-2: IP per rate limit — register ga qattiq
+    const registerLimiter = rateLimit({
+        windowMs: 60 * 60 * 1000,  // 1 soat
+        max: 3,                     // 1 IP dan soatiga 3 ta so'rov
+        keyGenerator: req => req.ip,
+        message: { ok: false, error: "Juda ko'p so'rov. 1 soatdan keyin qayta urinib ko'ring." },
+        standardHeaders: true,
+    });
+
+    // K-3: Status ga ham limit
+    const statusLimiter = rateLimit({
+        windowMs: 60 * 1000,  // 1 daqiqa
+        max: 10,              // 10 ta tekshiruv/min
+        keyGenerator: req => req.ip,
+        message: { ok: false, error: "Juda ko'p so'rov." },
+    });
 
     // ─── TARIF KALKULYATORI ───────────────────────────────────────────────────
     // POST /api/onboarding/calculate
@@ -78,7 +96,7 @@ function onboardingRoutes() {
     // ─── RO'YXATDAN O'TISH SO'ROVI ───────────────────────────────────────────
     // POST /api/onboarding/register
     // { name, ownerName, phone, address, plan, hasPrinter, printerType, calculatedPrice, notes }
-    r.post("/register", async (req, res) => {
+    r.post("/register", registerLimiter, async (req, res) => {
         try {
             const {
                 name, ownerName, phone, address,
@@ -148,7 +166,7 @@ function onboardingRoutes() {
 
     // ─── SO'ROV HOLATI TEKSHIRISH ─────────────────────────────────────────────
     // GET /api/onboarding/status?phone=+998...
-    r.get("/status", async (req, res) => {
+    r.get("/status", statusLimiter, async (req, res) => {
         try {
             const { phone } = req.query;
             if (!phone) return res.status(400).json({ ok: false, error: "phone kerak" });
@@ -160,19 +178,15 @@ function onboardingRoutes() {
             if (!shop)
                 return res.json({ ok: true, data: { found: false } });
 
+            // K-3: Minimal ma'lumot — tarif, billing holati oshkor qilinmaydi
             res.json({ ok: true, data: {
-                found: true,
-                name:    shop.name,
-                status:  shop.status,
-                plan:    shop.plan,
-                billing: shop.billing?.status,
-                submittedAt: shop.onboarding?.submittedAt,
-                approvedAt:  shop.onboarding?.approvedAt,
-                webappUrl:   shop.status === "active" ? shop.webappUrl : null,
+                found:    true,
+                status:   shop.status,
+                webappUrl: shop.status === "active" ? shop.webappUrl : null,
                 message: {
                     pending:  "So'rovingiz ko'rib chiqilmoqda. Admin 24 soat ichida bog'lanadi.",
-                    active:   "Do'koningiz faol! WebApp URL ga o'ting.",
-                    blocked:  "Do'koningiz to'lov muammosi sababli bloklangan. @botpos_support ga murojaat qiling.",
+                    active:   "Do'koningiz faol!",
+                    blocked:  "To'lov muammosi. @botpos_support ga murojaat qiling.",
                     disabled: "Do'koningiz o'chirilgan. @botpos_support ga murojaat qiling.",
                 }[shop.status] || "Noma'lum holat",
             }});

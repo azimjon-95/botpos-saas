@@ -77,13 +77,26 @@ function adminRoutes() {
     r.post("/refresh", async (req, res) => {
         try {
             const { refresh } = req.body || {};
+            if (!refresh) throw new Error("Refresh token kerak");
             const p = jwt.verify(refresh, ADMIN_JWT_SECRET);
             if (p.type !== "refresh") throw new Error("Noto'g'ri token turi");
-            const token = jwt.sign({ email: p.email }, ADMIN_JWT_SECRET, { expiresIn: "1h" });
+
+            // Y-1: Admin hali mavjudligini tekshirish (parol o'zgarganda)
+            const admin = await SuperAdmin.findOne({ email: p.email }).lean();
+            if (!admin) throw new Error("Admin topilmadi");
+
+            const token = jwt.sign({ email: p.email }, ADMIN_JWT_SECRET, { expiresIn: "1h", algorithm: "HS256" });
             res.json({ ok: true, data: { token } });
         } catch {
             res.status(401).json({ ok: false, error: "Refresh token noto'g'ri" });
         }
+    });
+
+    // POST /api/admin/logout
+    r.post("/logout", adminAuth, async (req, res) => {
+        // Logout: client da tokenni o'chiradi
+        // Server side: Redis ga blacklist (agar kerak bo'lsa)
+        res.json({ ok: true, message: "Chiqish muvaffaqiyatli. Client da tokenni o'chiring." });
     });
 
     // POST /api/admin/2fa/setup — 2FA sozlash (QR)

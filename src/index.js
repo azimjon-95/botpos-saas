@@ -107,18 +107,20 @@ process.on("unhandledRejection", e => console.error("[unhandledRejection]", e?.m
         app.use("/api/admin", adminLimiter);
         app.use("/api/admin/login", loginLimiter);
 
+        // K-2: Onboarding register — IP per 3 ta / soat (route da ham bor, bu ikkinchi qavat)
+        const onboardingRegLimiter = rateLimit({
+            windowMs: 60 * 60 * 1000,
+            max: 5,
+            keyGenerator: req => req.ip,
+            message: { ok: false, error: "Juda ko'p so'rov. 1 soatdan keyin urinib ko'ring." },
+        });
+        app.use("/api/onboarding/register", onboardingRegLimiter);
+
         // Routes
         app.use("/api/webapp", webappRoutes());
         app.use("/api/admin",  adminRoutes());
         app.use("/api/admin/billing", billingRoutes());
         // Onboarding spam himoya — 5 ariza / soat per IP
-        const onboardingLimiter = rateLimit({
-            windowMs: 60 * 60 * 1000, // 1 soat
-            max: 5,
-            message: { ok: false, error: "Juda ko'p ariza. 1 soatdan keyin qayta urinib ko'ring." },
-            keyGenerator: (req) => req.ip,
-        });
-        app.use("/api/onboarding/register", onboardingLimiter);
         app.use("/api/onboarding",      onboardingRoutes());  // PUBLIC
         app.use("/api",                 productRoutes());
 

@@ -82,8 +82,21 @@ function webappRoutes() {
             if (!items?.length)
                 return res.status(400).json({ ok: false, error: "Mahsulot tanlanmagan" });
 
+            // Telefon format tekshiruvi (O'zbekiston)
+            const phone = clientPhone.trim().replace(/\s/g, "");
+            if (!/^(\+998|998)?[0-9]{9}$/.test(cleanedPhone))
+                return res.status(400).json({ ok: false, error: "Telefon formati noto'g'ri. Masalan: +998901234567" });
+
+            // Ism uzunligi
+            if (clientName.trim().length < 2 || clientName.trim().length > 100)
+                return res.status(400).json({ ok: false, error: "Ism 2-100 belgi orasida bo'lishi kerak" });
+
+            // Items soni cheklash
+            if (items.length > 50)
+                return res.status(400).json({ ok: false, error: "Bir buyurtmada maksimal 50 ta mahsulot" });
+
             // Telefon format tekshiruvi (O'zbekiston: +998 yoki 998 bilan boshlanadi)
-            const phone = String(clientPhone).replace(/\s/g, "");
+            const cleanedPhone = String(clientPhone).replace(/\s/g, "");
             if (!/^(\+?998)?[0-9]{9}$/.test(phone)) {
                 return res.status(400).json({ ok: false, error: "Telefon raqam noto'g'ri (998901234567)" });
             }
@@ -139,10 +152,18 @@ function webappRoutes() {
     });
 
     // ─── BANNER YANGILASH (do'kon egasi) ─────────────────────────────────────
-    // PUT /api/webapp/:shopId/banner
-    r.put("/:shopId/banner", async (req, res) => {
+    // PUT /api/webapp/:shopId/banner — FAQAT admin (JWT kerak)
+    r.put("/:shopId/banner", adminAuth, async (req, res) => {
         try {
             const { bannerUrl } = req.body;
+            // URL format tekshiruvi
+            if (bannerUrl && !/^https?:\/\/.+/.test(bannerUrl)) {
+                return res.status(400).json({ ok: false, error: "bannerUrl to'g'ri URL bo'lishi kerak" });
+            }
+            // URL uzunligi
+            if (bannerUrl && bannerUrl.length > 500) {
+                return res.status(400).json({ ok: false, error: "bannerUrl juda uzun" });
+            }
             await Shop.updateOne({ _id: req.params.shopId }, { "webApp.bannerUrl": bannerUrl || "" });
             res.json({ ok: true });
         } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
