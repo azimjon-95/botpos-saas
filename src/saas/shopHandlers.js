@@ -1481,6 +1481,32 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
             reply_markup: mainMenu(!!ctx?.shop?.webApp?.enabled),
         });
 
+        // ── SOCKET.IO: printer APK ga real-time event ───────────────────────
+        try {
+            if (global._io) {
+                global._io.to(`shop:${shopId}`).emit("print:receipt", {
+                    shopId:   String(shopId),
+                    shopName: ctx?.shop?.name || "",
+                    orderNo:  sale.orderNo,
+                    seller:   seller.tgName,
+                    items:    items.map(it => ({
+                        name:  it.name,
+                        qty:   it.qty || 1,
+                        price: it.price,
+                        total: (it.qty || 1) * it.price,
+                    })),
+                    total,
+                    paidTotal,
+                    debtTotal,
+                    phone:    phone || null,
+                    vaqt,
+                    createdAt: new Date().toISOString(),
+                });
+            }
+        } catch (e) {
+            console.error("[socket] print emit xato:", e.message);
+        }
+
         // ── GURUHGA: to'liq sotuv xabari ───────────────────────────────────
         if (groupChatId) {
             const groupMsg = [
