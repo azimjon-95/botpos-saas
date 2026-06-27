@@ -53,91 +53,29 @@ async function loadFromDB(shopId) {
 
 // ─── KATALOGNI CACHE DAN YOKI DB DAN OLISH ───────────────────────────────────
 async function getCatalog(shopId) {
-    const r = getRedis();
-    const key = cacheKey(String(shopId));
+    const key = `catalog:${shopId}`;
+    return getOrFetch(key,
+        () => _fetchFromDB(shopId),
+        CATALOG_TTL
+    );
+}
 
-    // 1. Redis dan tekshir
-    if (r) {
-        try {
-            const cached = await r.get(key);
-            if (cached) return JSON.parse(cached);
-        } catch {}
+async function _fetchFromDB(shopId) {
+    const oid  = new mongoose.Types.ObjectId(String(shopId));
+    const docs = await Product.find({ shopId: oid, isActive: true })
+        .sort({ category: 1, name: 1 }).lean();
+
+    const grouped = {};
+    for (const p of docs) {
+        const cat = p.category || "Boshqa";
+        if (!grouped[cat]) grouped[cat] = { category: cat, emoji: p.emoji || "🛍", items: [] };
+        grouped[cat].items.push(p);
     }
-
-    // 2. DB dan yukla
-    const data = await loadFromDB(shopId);
-
-    // 3. Cache ga yoz
-    if (r && data.length) {
-        r.set(key, JSON.stringify(data), "EX", CACHE_TTL).catch(() => {});
-    }
-    return data;
+    return Object.values(grouped);
 }
 
-// ─── CACHE TOZALASH (mahsulot o'zgarganda) ───────────────────────────────────
-async function invalidateCache(shopId) {
-    const r = getRedis();
-    if (r) {
-        try { await r.del(cacheKey(String(shopId))); } catch {}
-    }
+async function invalidateCatalog(shopId) {
+    await cacheDel(`catalog:${shopId}`);
 }
 
-// ─── MAHSULOT QO'SHISH (cache yangilaydi) ────────────────────────────────────
-async function addProduct(shopId, { category, emoji, name, price, unit }) {
-    // Kategoriya emoji — avval borini olish yoki yangi
-    if (!emoji) {
-        const existing = await Product.findOne({ shopId, category }).lean();
-        emoji = existing?.emoji || "🛍";
-    }
-
-    // Mavjud mahsulot bormi?
-    const dup = await Product.findOne({ shopId, category, name }).lean();
-    if (dup) throw new Error(`"${name}" allaqachon bor!`);
-
-    const count = await Product.countDocuments({ shopId, category });
-    const p = await Product.create({
-        shopId, category: category.trim(), emoji,
-        name: name.trim(), price: Number(price),
-        unit: unit || "dona", sortOrder: count,
-    });
-    await invalidateCache(shopId);
-    return p;
-}
-
-// ─── MAHSULOT O'CHIRISH ───────────────────────────────────────────────────────
-async function deleteProduct(shopId, productId) {
-    await Product.deleteOne({ _id: productId, shopId });
-    await invalidateCache(shopId);
-}
-
-// ─── KATEGORIYA O'CHIRISH (ichidagi barchasi bilan) ──────────────────────────
-async function deleteCategory(shopId, category) {
-    const { deletedCount } = await Product.deleteMany({ shopId, category });
-    await invalidateCache(shopId);
-    return deletedCount;
-}
-
-// ─── MAHSULOT NARXINI YANGILASH ───────────────────────────────────────────────
-async function updateProductPrice(shopId, productId, newPrice) {
-    await Product.updateOne({ _id: productId, shopId }, { price: Number(newPrice) });
-    await invalidateCache(shopId);
-}
-
-// ─── KATEGORIYA NOMI / EMOJI YANGILASH ───────────────────────────────────────
-async function updateCategory(shopId, oldName, { newName, emoji }) {
-    const upd = {};
-    if (newName) upd.category = newName.trim();
-    if (emoji)   upd.emoji   = emoji;
-    await Product.updateMany({ shopId, category: oldName }, upd);
-    await invalidateCache(shopId);
-}
-
-module.exports = {
-    getCatalog,
-    invalidateCache,
-    addProduct,
-    deleteProduct,
-    deleteCategory,
-    updateProductPrice,
-    updateCategory,
-};
+module.exports = { getCatalog, invalidateCatalog };

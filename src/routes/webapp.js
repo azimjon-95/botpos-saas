@@ -6,6 +6,7 @@ const Shop    = require("../models/Shop");
 const Product = require("../models/Product");
 const Order   = require("../models/Order");
 const { getCatalog } = require("../services/catalogCache");
+const { getOrFetch }  = require("../utils/cache");
 const { getBot }     = require("../saas/botManager");
 const { adminAuth }  = require("../middlewares/adminAuth");
 const { formatMoney } = require("../utils/money");
@@ -17,9 +18,13 @@ function webappRoutes() {
     // GET /api/webapp/:shopId
     r.get("/:shopId", async (req, res) => {
         try {
-            const shop = await Shop.findById(req.params.shopId)
-                .select("name webApp webappUrl billing.status isActive sector plan")
-                .lean();
+            const shop = await getOrFetch(
+                `webapp:shop:${req.params.shopId}`,
+                () => Shop.findById(req.params.shopId)
+                    .select("name webApp webappUrl billing.status isActive sector plan")
+                    .lean(),
+                120  // 2 daqiqa
+            );
 
             if (!shop || !shop.isActive)
                 return res.status(404).json({ ok: false, error: "Do'kon topilmadi" });
