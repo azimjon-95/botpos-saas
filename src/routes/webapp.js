@@ -218,6 +218,45 @@ function webappRoutes() {
         } catch (e) { res.status(500).json({ ok: false, error: process.env.NODE_ENV === "production" ? "Server xatosi" : e.message }); }
     });
 
+
+    // POST /api/webapp/printer/auth — APK pincode bilan kirish
+    // Qaytaradi: shopId, shopName, serverUrl
+    r.post("/printer/auth", async (req, res) => {
+        try {
+            const { pincode } = req.body;
+            if (!pincode || String(pincode).length < 4)
+                return res.status(400).json({ ok: false, error: "Pincode kerak (min 4 belgi)" });
+
+            const { decrypt } = require("../utils/encrypt");
+            const shops = await Shop.find({ isActive: true })
+                .select("name botPassword plan billing.status").lean();
+
+            const shop = shops.find(s => {
+                try {
+                    // botPassword oddiy saqlangan (yoki encrypted)
+                    const pwd = s.botPassword || "";
+                    return pwd === String(pincode).trim();
+                } catch { return false; }
+            });
+
+            if (!shop)
+                return res.status(401).json({ ok: false, error: "Pincode noto'g'ri" });
+
+            if (shop.billing?.status === "blocked")
+                return res.status(403).json({ ok: false, error: "Do'kon bloklangan" });
+
+            const { WEBAPP_BASE_URL } = require("../config");
+            res.json({ ok: true, data: {
+                shopId:    String(shop._id),
+                shopName:  shop.name,
+                serverUrl: process.env.SERVER_URL || WEBAPP_BASE_URL?.replace("https://botpos.uz","") || "http://localhost:6060",
+                plan:      shop.plan,
+            }});
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
     return r;
 }
 
