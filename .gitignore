@@ -3,3 +3,4 @@ node_modules/
 *.log
 admin-panel/build/
 admin-panel/node_modules/
+.env.local
