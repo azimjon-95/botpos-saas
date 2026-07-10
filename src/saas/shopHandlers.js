@@ -349,7 +349,8 @@ function mainMenu(hasWebApp = false) {
     const rows = [
         [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
         [{ text: "📌 Qarzlar" }, { text: "🔒 Kassani yopish" }],
-        [{ text: "📆 Oylik hisobot" }, { text: "📋 Menyu" }],
+        [{ text: "📅 Bugun" }, { text: "📆 Hafta" }, { text: "📊 Oy" }],
+        [{ text: "📋 Menyu" }],
     ];
     if (hasWebApp) rows.push([{ text: "🌐 Mening saytim" }]);
     return { keyboard: rows, resize_keyboard: true };
@@ -374,15 +375,37 @@ function debtKeyboard(debtId) {
     };
 }
 
-// ─── OYLIK HISOBOT ────────────────────────────────────────────────────────────
-async function monthlyReport(shopId) {
+// ─── UNIVERSAL HISOBOT ───────────────────────────────────────────────────────
+// period: "today" | "week" | "month"
+async function generateReport(shopId, period = "today") {
     const dayjs  = require("dayjs");
-    const tz     = require("dayjs/plugin/timezone");
     const utc    = require("dayjs/plugin/utc");
+    const tz     = require("dayjs/plugin/timezone");
     dayjs.extend(utc); dayjs.extend(tz);
-    const TZ = "Asia/Tashkent";
-    const from = dayjs().tz(TZ).startOf("month").toDate();
-    const to   = dayjs().tz(TZ).endOf("month").toDate();
+    const TZ  = "Asia/Tashkent";
+    const now = dayjs().tz(TZ);
+
+    let from, to, label, emoji;
+    switch (period) {
+        case "today":
+            from  = now.startOf("day").toDate();
+            to    = now.endOf("day").toDate();
+            label = `📅 <b>Bugungi hisobot</b> (${now.format("DD.MM.YYYY")})`;
+            emoji = "📅";
+            break;
+        case "week":
+            from  = now.startOf("week").toDate();
+            to    = now.endOf("week").toDate();
+            label = `📆 <b>Haftalik hisobot</b> (${now.startOf("week").format("DD.MM")}–${now.endOf("week").format("DD.MM.YYYY")})`;
+            emoji = "📆";
+            break;
+        default: // month
+            from  = now.startOf("month").toDate();
+            to    = now.endOf("month").toDate();
+            label = `📊 <b>${now.format("MMMM YYYY")} oylik hisobot</b>`;
+            emoji = "📊";
+    }
+
     const match = { shopId, createdAt: { $gte: from, $lte: to } };
 
     const [sales, expenses, debts, balance] = await Promise.all([
@@ -396,22 +419,67 @@ async function monthlyReport(shopId) {
     const debtSum    = sales.reduce((a, s) => a + (s.debtTotal || 0), 0);
     const expenseSum = expenses.reduce((a, e) => a + (e.amount || 0), 0);
     const openDebt   = debts.reduce((a, d) => a + (d.remainingDebt || 0), 0);
+    const foyda      = saleSum - expenseSum;
 
-    const month = dayjs().tz(TZ).format("MMMM YYYY");
-    return [
-        `📆 <b>${month} oylik hisobot</b>`,
-        ``,
-        `💰 Jami tushum: <b>${formatMoney(saleSum)}</b> so'm`,
-        `📌 Nasiya (oy): <b>${formatMoney(debtSum)}</b> so'm`,
+    // [5] TOP-5 mahsulot
+    const productCount = {};
+    for (const s of sales) {
+        for (const it of (s.items || [])) {
+            const k = it.name || "Noma'lum";
+            productCount[k] = (productCount[k] || 0) + (it.qty || 1);
+        }
+    }
+    const top5 = Object.entries(productCount)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+
+    // [6] Xodimlar bo'yicha
+    const workerStats = {};
+    for (const s of sales) {
+        const name = s.seller?.tgName || "Noma'lum";
+        if (!workerStats[name]) workerStats[name] = { count: 0, sum: 0 };
+        workerStats[name].count++;
+        workerStats[name].sum += s.paidTotal || 0;
+    }
+    const workers = Object.entries(workerStats)
+        .sort((a, b) => b[1].sum - a[1].sum);
+
+    const lines = [
+        label, "",
+        `💰 Tushum: <b>${formatMoney(saleSum)}</b> so'm`,
+        debtSum > 0 ? `📌 Nasiya: <b>${formatMoney(debtSum)}</b> so'm` : "",
         `💸 Chiqim: <b>${formatMoney(expenseSum)}</b> so'm`,
-        `📉 Foyda: <b>${formatMoney(saleSum - expenseSum)}</b> so'm`,
-        ``,
-        `🏦 Hozirgi balans: <b>${formatMoney(balance)}</b> so'm`,
-        `📌 Ochiq qarzlar: <b>${formatMoney(openDebt)}</b> so'm`,
-        ``,
-        `📊 Sotuvlar: ${sales.length} ta`,
-        `🧾 Chiqimlar: ${expenses.length} ta`,
-    ].join("\n");
+        `📉 Foyda: <b>${foyda >= 0 ? "" : "-"}${formatMoney(Math.abs(foyda))}</b> so'm`,
+        "",
+        `🏦 Balans: <b>${formatMoney(balance)}</b> so'm`,
+        openDebt > 0 ? `⚠️ Ochiq qarzlar: <b>${formatMoney(openDebt)}</b> so'm` : "✅ Qarz yo'q",
+        "",
+        `📊 Sotuvlar: <b>${sales.length} ta</b>`,
+        `🧾 Chiqimlar: <b>${expenses.length} ta</b>`,
+    ].filter(l => l !== "");
+
+    // TOP mahsulotlar
+    if (top5.length) {
+        lines.push("", "🏆 <b>Eng ko'p sotilgan:</b>");
+        top5.forEach(([name, qty], i) => {
+            lines.push(`  ${i + 1}. ${name} — ${qty} ta`);
+        });
+    }
+
+    // Xodimlar
+    if (workers.length > 1) {
+        lines.push("", "👷 <b>Xodimlar bo'yicha:</b>");
+        workers.forEach(([name, s]) => {
+            lines.push(`  👤 ${name}: ${s.count} ta sotuv — ${formatMoney(s.sum)} so'm`);
+        });
+    }
+
+    return lines.join("\n");
+}
+
+// Eski nom bilan mos (backward compat)
+async function monthlyReport(shopId) {
+    return generateReport(shopId, "month");
 }
 
 // ─── HANDLER ULASH ───────────────────────────────────────────────────────────
@@ -506,6 +574,30 @@ function attachHandlers(bot, ctx) {
         if (!chatId || !userId) return;
         if (!(await isAuthed(shopId, userId))) return;
 
+
+        // ── [8] SOTUV TAHRIRLASH ─────────────────────────────────────────────
+        if (data.startsWith("sale_edit:")) {
+            const saleId = data.replace("sale_edit:", "");
+            const sale   = await Sale.findOne({ _id: saleId, shopId }).lean();
+            if (!sale) {
+                await bot.answerCallbackQuery(cq.id, { text: "Sotuv topilmadi" });
+                return;
+            }
+            await bot.answerCallbackQuery(cq.id);
+            // Tahrirlash uchun sabab so'rash: to'lov miqdorini o'zgartirish
+            await setMode(shopId, userId, `sale_edit_amount:${saleId}`);
+            const cur = `Hozir: to'langan ${formatMoney(sale.paidTotal)} so'm, qarz ${formatMoney(sale.debtTotal)} so'm`;
+            return bot.sendMessage(chatId,
+                `✏️ <b>Sotuv #{${sale.orderNo?.replace("#","") || saleId}}</b>\n${cur}\n\nYangi to'langan summani kiriting (faqat raqam):`,
+                {
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        keyboard: [[{ text: "🚫 Bekor" }]],
+                        resize_keyboard: true, one_time_keyboard: true,
+                    }
+                }
+            );
+        }
 
         // ── SOTUV O'CHIRISH ───────────────────────────────────────────────────
         if (data.startsWith("sale_delete:")) {
@@ -946,6 +1038,56 @@ function attachHandlers(bot, ctx) {
             return;
         }
 
+        // ── [8] SOTUV TAHRIRLASH — yangi summa ───────────────────────────────
+        if (mode?.startsWith("sale_edit_amount:")) {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Tahrirlash bekor qilindi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+            const amount = Number(text.replace(/\D/g, ""));
+            if (!amount || amount < 0) {
+                return bot.sendMessage(chatId, "❌ Noto'g'ri summa. Faqat raqam kiriting:");
+            }
+            const saleId = mode.replace("sale_edit_amount:", "");
+            const sale   = await Sale.findOne({ _id: saleId, shopId }).lean();
+            if (!sale) {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Sotuv topilmadi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+            // Balansni yangilash
+            const oldPaid = sale.paidTotal || 0;
+            const newPaid = Math.min(amount, sale.total);
+            const diff    = newPaid - oldPaid;
+            if (diff !== 0) {
+                await Counter.findOneAndUpdate(
+                    { shopId, key: "balance" },
+                    { $inc: { value: diff } },
+                    { upsert: true }
+                );
+            }
+            await Sale.updateOne({ _id: saleId }, {
+                $set: {
+                    paidTotal: newPaid,
+                    debtTotal: sale.total - newPaid,
+                }
+            });
+            // Qarz yangilash
+            await Debt.updateMany({ saleId: sale._id }, {
+                $set: {
+                    totalDebt:     sale.total - newPaid,
+                    remainingDebt: sale.total - newPaid,
+                    isClosed:      sale.total - newPaid <= 0,
+                }
+            });
+            await setMode(shopId, userId, null);
+            return bot.sendMessage(chatId,
+                `✅ <b>Sotuv yangilandi</b>\n` +
+                `💰 To'langan: <b>${formatMoney(newPaid)} so'm</b>\n` +
+                `📌 Qarz: <b>${formatMoney(sale.total - newPaid)} so'm</b>`,
+                { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) }
+            );
+        }
+
         // ── SOTUV O'CHIRISH — SABAB ─────────────────────────────────────────
         if (mode?.startsWith("sale_delete_reason:")) {
             if (text === "🚫 Bekor") {
@@ -1022,7 +1164,32 @@ function attachHandlers(bot, ctx) {
         // ── MENYU ────────────────────────────────────────────────────────────
         if (text === "📋 Menyu") {
             const balance = await getBalance(shopId);
-            const reply = [`📋 <b>Menyu</b>`, `🏦 Balans: <b>${formatMoney(balance)}</b> so'm`].join("\n");
+            // [10] Balans tarixi — oxirgi 10 operatsiya
+            const dayjs = require("dayjs");
+            const now   = dayjs();
+            const from7 = now.subtract(7, "day").toDate();
+            const [recentSales, recentExpenses] = await Promise.all([
+                Sale.find({ shopId, createdAt: { $gte: from7 } })
+                    .sort({ createdAt: -1 }).limit(5).lean(),
+                Expense.find({ shopId, createdAt: { $gte: from7 } })
+                    .sort({ createdAt: -1 }).limit(5).lean(),
+            ]);
+            const ops = [
+                ...recentSales.map(s => ({
+                    date: s.createdAt,
+                    txt:  `✅ +${formatMoney(s.paidTotal)} so'm (sotuv ${s.orderNo})`,
+                })),
+                ...recentExpenses.map(e => ({
+                    date: e.createdAt,
+                    txt:  `💸 −${formatMoney(e.amount)} so'm (${e.categoryKey || "chiqim"})`,
+                })),
+            ].sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0, 8);
+
+            const histLines = ops.length
+                ? ["", "📜 <b>So'nggi operatsiyalar:</b>", ...ops.map(o => `  ${o.txt}`)]
+                : [];
+
+            const reply = [`📋 <b>Menyu</b>`, `🏦 Balans: <b>${formatMoney(balance)}</b> so'm`, ...histLines].join("\n");
             await bot.sendMessage(chatId, reply, { parse_mode: "HTML", reply_markup: mainMenu() });
             // Katalog boshqarish tugmasi
             await bot.sendMessage(chatId, "📂 Katalog boshqaruvi:", {
@@ -1074,10 +1241,16 @@ function attachHandlers(bot, ctx) {
         }
 
         // ── OYLIK HISOBOT (FIX #2 — handler qo'shildi) ───────────────────────
-        if (text === "📆 Oylik hisobot") {
+        // ── HISOBOT — 3 xil davr ────────────────────────────────────────────
+        if (text === "📅 Bugun" || text === "📆 Hafta" || text === "📊 Oy") {
             try {
-                const report = await monthlyReport(shopId);
-                return bot.sendMessage(chatId, report, { parse_mode: "HTML" });
+                const period = text === "📅 Bugun" ? "today"
+                             : text === "📆 Hafta" ? "week" : "month";
+                const report = await generateReport(shopId, period);
+                return bot.sendMessage(chatId, report, {
+                    parse_mode: "HTML",
+                    reply_markup: mainMenu(hasWebApp),
+                });
             } catch (e) {
                 return bot.sendMessage(chatId, `❌ Hisobot xatosi: ${e.message}`);
             }
@@ -1468,7 +1641,10 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
 
         const inlineKb = { inline_keyboard: [
             [{ text: "🧾 Chekni chop etish", web_app: { url: checkUrl } }],
-            [{ text: "🗑 O'chirish (Sotuv)", callback_data: `sale_delete:${sale._id}` }],
+            [
+                { text: "✏️ Tahrirlash", callback_data: `sale_edit:${sale._id}` },
+                { text: "🗑 O'chirish",  callback_data: `sale_delete:${sale._id}` },
+            ],
         ]};
 
         await bot.sendMessage(chatId, shortMsg, {
@@ -1520,6 +1696,18 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
                 `🕐 ${vaqt}`,
             ].filter(Boolean).join("\n");
             bot.sendMessage(groupChatId, groupMsg, { parse_mode: "HTML" }).catch(() => {});
+        }
+
+        // ── [2] EGAGA REAL-TIME: xodim sotsa — ega bildiriladi ─────────────
+        // Faqat xodim sotgan bo'lsa (ega o'zi sotsa — takrorlanmasin)
+        if (adminTgId && userId !== adminTgId) {
+            const ownerMsg = [
+                `🔔 <b>Yangi sotuv</b>`,
+                `👤 ${seller.tgName}: <b>${formatMoney(paidTotal)} so'm</b>`,
+                `🧾 ${itemsLine}`,
+                debtTotal > 0 ? `📌 Qarz: ${formatMoney(debtTotal)} so'm` : "",
+            ].filter(Boolean).join("\n");
+            bot.sendMessage(adminTgId, ownerMsg, { parse_mode: "HTML" }).catch(() => {});
         }
 
     } catch (e) {
