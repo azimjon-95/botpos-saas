@@ -352,7 +352,7 @@ function mainMenu(hasWebApp = false) {
         [{ text: "📅 Bugun" }, { text: "📆 Hafta" }, { text: "📊 Oy" }],
         [{ text: "📋 Menyu" }],
     ];
-    if (hasWebApp) rows.push([{ text: "🌐 Mening saytim" }]);
+    if (hasWebApp) rows.push([{ text: "🌐 Mening saytim" }, { text: "🚚 Yetkazib berish" }]);
     return { keyboard: rows, resize_keyboard: true };
 }
 
@@ -574,6 +574,48 @@ function attachHandlers(bot, ctx) {
         if (!chatId || !userId) return;
         if (!(await isAuthed(shopId, userId))) return;
 
+
+        // ── 🚚 DELIVERY CALLBACK ─────────────────────────────────────────────
+        if (data.startsWith("delivery:")) {
+            const action = data.replace("delivery:", "");
+            await bot.answerCallbackQuery(cq.id);
+
+            if (action === "off") {
+                await Shop.updateOne({ _id: shopId },
+                    { $set: { "webApp.delivery.enabled": false } });
+                return bot.sendMessage(chatId,
+                    "❌ Yetkazib berish xizmati o'chirildi.",
+                    { reply_markup: mainMenu(hasWebApp) });
+            }
+
+            if (action === "free") {
+                await Shop.updateOne({ _id: shopId }, { $set: {
+                    "webApp.delivery.enabled": true,
+                    "webApp.delivery.free":    true,
+                    "webApp.delivery.minAmount": 0,
+                    "webApp.delivery.text":    "",
+                }});
+                return bot.sendMessage(chatId,
+                    "🚚 <b>Bepul yetkazib berish yoqildi!</b>\n\nMijozlar saytda ko'radi.",
+                    { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) });
+            }
+
+            if (action === "min") {
+                await setMode(shopId, userId, "delivery_min_amount");
+                return bot.sendMessage(chatId,
+                    "💰 Minimal summani kiriting (so'mda):\nMasalan: 50000",
+                    { reply_markup: { keyboard: [[{ text: "🚫 Bekor" }]],
+                        resize_keyboard: true, one_time_keyboard: true }});
+            }
+
+            if (action === "text") {
+                await setMode(shopId, userId, "delivery_custom_text");
+                return bot.sendMessage(chatId,
+                    "✏️ Yangi matnni kiriting:\nMasalan: Toshkent bo'ylab bepul yetkazib beramiz!",
+                    { reply_markup: { keyboard: [[{ text: "🚫 Bekor" }]],
+                        resize_keyboard: true, one_time_keyboard: true }});
+            }
+        }
 
         // ── [8] SOTUV TAHRIRLASH ─────────────────────────────────────────────
         if (data.startsWith("sale_edit:")) {
@@ -811,6 +853,33 @@ function attachHandlers(bot, ctx) {
         const mode = await getMode(shopId, userId);
 
         // ── WEB SAYT ─────────────────────────────────────────────────────────
+        // ── 🚚 YETKAZIB BERISH SOZLAMASI ─────────────────────────────────────
+        if (text === "🚚 Yetkazib berish") {
+            const shop = await Shop.findById(shopId).select("webApp name").lean();
+            const d    = shop?.webApp?.delivery;
+            const status = d?.enabled
+                ? `✅ Yoqilgan${d.free ? " (bepul)" : d.minAmount > 0 ? ` (${formatMoney(d.minAmount)} so'mdan)` : ""}`
+                : "❌ O'chiq";
+
+            return bot.sendMessage(chatId,
+                `🚚 <b>Yetkazib berish xizmati</b>\n\nHolat: ${status}`,
+                {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [
+                        d?.enabled
+                            ? [{ text: "❌ O'chirish", callback_data: "delivery:off" }]
+                            : [{ text: "✅ Yoqish (bepul)", callback_data: "delivery:free" }],
+                        !d?.enabled
+                            ? [{ text: "💰 Minimal summali yoqish", callback_data: "delivery:min" }]
+                            : [],
+                        d?.enabled
+                            ? [{ text: "✏️ Matnni o'zgartirish", callback_data: "delivery:text" }]
+                            : [],
+                    ].filter(r => r.length > 0)},
+                }
+            );
+        }
+
         if (text === "🌐 Mening saytim") {
             const Shop    = require("../models/Shop");
             const shopDoc = await Shop.findById(shopId)
@@ -1036,6 +1105,43 @@ function attachHandlers(bot, ctx) {
                 );
             }
             return;
+        }
+
+        // ── 🚚 DELIVERY — minimal summa ──────────────────────────────────────
+        if (mode === "delivery_min_amount") {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+            const amount = Number(text.replace(/\D/g, ""));
+            if (!amount) return bot.sendMessage(chatId, "❌ Noto'g'ri summa. Raqam kiriting:");
+            await Shop.updateOne({ _id: shopId }, { $set: {
+                "webApp.delivery.enabled":   true,
+                "webApp.delivery.free":      false,
+                "webApp.delivery.minAmount": amount,
+                "webApp.delivery.text":      "",
+            }});
+            await setMode(shopId, userId, null);
+            return bot.sendMessage(chatId,
+                `🚚 <b>Yetkazib berish yoqildi!</b>\n${formatMoney(amount)} so'mdan yuqori buyurtmalarda bepul.`,
+                { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) });
+        }
+
+        // ── 🚚 DELIVERY — custom matn ─────────────────────────────────────────
+        if (mode === "delivery_custom_text") {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+            const cleanText = text.trim().slice(0, 120);
+            await Shop.updateOne({ _id: shopId }, { $set: {
+                "webApp.delivery.enabled": true,
+                "webApp.delivery.text":    cleanText,
+            }});
+            await setMode(shopId, userId, null);
+            return bot.sendMessage(chatId,
+                `✅ Matn yangilandi:\n"${cleanText}"`,
+                { reply_markup: mainMenu(hasWebApp) });
         }
 
         // ── [8] SOTUV TAHRIRLASH — yangi summa ───────────────────────────────
