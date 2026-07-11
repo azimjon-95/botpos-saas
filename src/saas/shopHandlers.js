@@ -634,6 +634,25 @@ function attachHandlers(bot, ctx) {
             const action = data.replace("cb_set:", "");
             await bot.answerCallbackQuery(cq.id);
 
+            if (action === "token") {
+                await setMode(shopId, userId, "cashback_set_token");
+                return bot.sendMessage(chatId,
+                    `🤖 <b>Cashback bot token</b>\n\n` +
+                    `@BotFather dan yangi bot yarating:\n` +
+                    `1. @BotFather → /newbot\n` +
+                    `2. Bot nomi va username kiriting\n` +
+                    `3. Token nusxalab menga yuboring\n\n` +
+                    `<i>Misol: 123456789:AAFxxxx...</i>`,
+                    {
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            keyboard: [[{ text: "🚫 Bekor" }]],
+                            resize_keyboard: true, one_time_keyboard: true,
+                        }
+                    }
+                );
+            }
+
             if (action === "percent") {
                 await setMode(shopId, userId, "cashback_set_percent");
                 return bot.sendMessage(chatId,
@@ -1208,6 +1227,67 @@ function attachHandlers(bot, ctx) {
                 );
             }
             return;
+        }
+
+        // ── 💳 CASHBACK BOT TOKEN ────────────────────────────────────────────
+        if (mode === "cashback_set_token") {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+
+            // Token format: "123456789:AAFxxx..."
+            const tokenRx = /^\d{8,12}:[A-Za-z0-9_-]{35}$/;
+            if (!tokenRx.test(text.trim())) {
+                return bot.sendMessage(chatId,
+                    `❌ Token formati noto'g'ri.\n` +
+                    `To'g'ri format: <code>123456789:AAFxxxxxxxx...</code>\n\n` +
+                    `@BotFather dan oling.`,
+                    { parse_mode: "HTML" }
+                );
+            }
+
+            // Bot tokenni tekshiramiz — getMe() orqali
+            await bot.sendMessage(chatId, "⏳ Token tekshirilmoqda...");
+            try {
+                const TelegramBot = require("node-telegram-bot-api");
+                const testBot = new TelegramBot(text.trim(), { polling: false });
+                const botInfo  = await testBot.getMe();
+                const username = botInfo.username || "";
+
+                // DB ga saqlaymiz
+                const { encrypt } = require("../utils/encrypt");
+                const encToken    = encrypt(text.trim());
+                await Shop.updateOne({ _id: shopId }, {
+                    $set: {
+                        customerBotToken:    encToken,
+                        customerBotUsername: username,
+                    }
+                });
+
+                await setMode(shopId, userId, null);
+
+                // Bot manager ga yangi botni ulashni aytamiz
+                const { getBotManager } = require("./botManager");
+                const bm = getBotManager();
+                if (bm) bm.reloadShop(shopId).catch(()=>{});
+
+                return bot.sendMessage(chatId,
+                    `✅ <b>Cashback bot ulandi!</b>\n\n` +
+                    `🤖 @${username}\n\n` +
+                    `Endi mijozlaringiz ushbu botga /start yozib\n` +
+                    `cashback olishni boshlashadi.\n\n` +
+                    `💡 Botni guruhingizga PIN qilishni unutmang!`,
+                    { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) }
+                );
+            } catch(e) {
+                return bot.sendMessage(chatId,
+                    `❌ Token noto'g'ri yoki bot ishlamayapti.\n` +
+                    `@BotFather dan to'g'ri tokenni oling.\n\n` +
+                    `Xato: ${e.message}`,
+                    { parse_mode: "HTML" }
+                );
+            }
         }
 
         // ── 💳 CASHBACK FOIZ ─────────────────────────────────────────────────
