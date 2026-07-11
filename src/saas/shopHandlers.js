@@ -40,18 +40,29 @@ const CAT_MAP = Object.fromEntries(EXPENSE_CATEGORIES.map(c => [c.key, c]));
 
 // ─── REDIS ───────────────────────────────────────────────────────────────────
 let _redis = null;
+let _redisOk   = true;
+let _lastRetry = 0;
+
 function getRedis() {
     if (!Redis || !REDIS_URL) return null;
+    // Xato bergan bo'lsa 30s kutamiz
+    if (!_redisOk && Date.now() - _lastRetry < 30_000) return null;
     if (!_redis) {
         _redis = new Redis(REDIS_URL, {
             maxRetriesPerRequest: 0,
-            retryStrategy:        () => null,  // qayta ulanmaydi
+            retryStrategy:        () => null,
             lazyConnect:          true,
             enableOfflineQueue:   false,
+            connectTimeout:       1500,
         });
-        _redis.on("error", () => {}); // ECONNREFUSED ni suppress qilamiz
+        _redis.on("error", () => {
+            _redisOk   = false;
+            _lastRetry = Date.now();
+        });
+        _redis.on("connect", () => { _redisOk = true; });
+        _redis.on("close",   () => { _redisOk = false; });
     }
-    return _redis;
+    return _redisOk ? _redis : null;
 }
 
 function authKey(shopId, userId)      { return `auth:${shopId}:${userId}`; }
