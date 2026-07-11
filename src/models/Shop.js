@@ -129,6 +129,8 @@ const ShopSchema = new mongoose.Schema({
     addons: {
         ai:      { type: Boolean, default: false },   // 🤖 +50,000/oy
         cashback:{ type: Boolean, default: false },   // 📱 +30,000/oy
+        cashbackPercent: { type: Number, default: 5, min: 1, max: 50 }, // foiz
+        cashbackMinAmount:{ type: Number, default: 50000 }, // minimal xarid
         webapp:  { type: Boolean, default: false },   // 🌐 +50,000/oy
     },
 

@@ -20,4 +20,5 @@ const SaleSchema = new mongoose.Schema({
 }, { versionKey: false });
 
 SaleSchema.index({ shopId: 1, createdAt: -1 });
+SaleSchema.index({ qrCode: 1 }, { unique: true, sparse: true });
 module.exports = mongoose.model("Sale", SaleSchema);

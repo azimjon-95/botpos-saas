@@ -364,6 +364,7 @@ function mainMenu(hasWebApp = false) {
         [{ text: "📋 Menyu" }],
     ];
     if (hasWebApp) rows.push([{ text: "🌐 Mening saytim" }, { text: "🚚 Yetkazib berish" }]);
+    if (hasWebApp) rows.push([{ text: "💳 Cashback" }]);
     return { keyboard: rows, resize_keyboard: true };
 }
 
@@ -628,6 +629,50 @@ function attachHandlers(bot, ctx) {
             }
         }
 
+        // ── 💳 CASHBACK SOZLAMA CALLBACK ────────────────────────────────────
+        if (data.startsWith("cb_set:")) {
+            const action = data.replace("cb_set:", "");
+            await bot.answerCallbackQuery(cq.id);
+
+            if (action === "percent") {
+                await setMode(shopId, userId, "cashback_set_percent");
+                return bot.sendMessage(chatId,
+                    `📊 Yangi cashback foizini kiriting (1-50):
+
+` +
+                    `Masalan: 5 → har xaridning 5% qaytadi
+` +
+                    `         10 → har xaridning 10% qaytadi`,
+                    { reply_markup: {
+                        keyboard: [
+                            [{text:"3%"},{text:"5%"},{text:"7%"}],
+                            [{text:"10%"},{text:"15%"},{text:"20%"}],
+                            [{text:"🚫 Bekor"}],
+                        ],
+                        resize_keyboard: true, one_time_keyboard: true,
+                    }}
+                );
+            }
+
+            if (action === "minamount") {
+                await setMode(shopId, userId, "cashback_set_minamount");
+                return bot.sendMessage(chatId,
+                    `💰 Minimal xarid summasini kiriting (so'mda):
+
+` +
+                    `Masalan: 50000 → 50,000 so'mdan xarid qilsa cashback oladi`,
+                    { reply_markup: {
+                        keyboard: [
+                            [{text:"30000"},{text:"50000"},{text:"70000"}],
+                            [{text:"100000"},{text:"150000"}],
+                            [{text:"🚫 Bekor"}],
+                        ],
+                        resize_keyboard: true, one_time_keyboard: true,
+                    }}
+                );
+            }
+        }
+
         // ── [8] SOTUV TAHRIRLASH ─────────────────────────────────────────────
         if (data.startsWith("sale_edit:")) {
             const saleId = data.replace("sale_edit:", "");
@@ -864,6 +909,53 @@ function attachHandlers(bot, ctx) {
         const mode = await getMode(shopId, userId);
 
         // ── WEB SAYT ─────────────────────────────────────────────────────────
+        // ── 💳 CASHBACK SOZLAMA ──────────────────────────────────────────────
+        if (text === "💳 Cashback") {
+            const shop = await Shop.findById(shopId)
+                .select("cashbackPercent cashbackMinAmount addons").lean();
+            const hasCashback = shop?.addons?.cashback;
+
+            if (!hasCashback) {
+                return bot.sendMessage(chatId,
+                    `💳 <b>Cashback addon</b>
+
+` +
+                    `Bu funksiya yoqilmagan.
+` +
+                    `Admin paneldan "📱 QR Cashback" addonini yoqing.
+` +
+                    `<i>+30,000 so'm/oy</i>`,
+                    { parse_mode: "HTML" }
+                );
+            }
+
+            const pct    = shop?.cashbackPercent    || 5;
+            const minAmt = shop?.cashbackMinAmount  || 50000;
+
+            return bot.sendMessage(chatId,
+                `💳 <b>Cashback sozlamalari</b>
+
+` +
+                `📊 Hozirgi foiz: <b>${pct}%</b>
+` +
+                `💰 Minimal xarid: <b>${formatMoney(minAmt)} so'm</b>
+
+` +
+                `Mijoz chekdagi QR ni skanerlasa, xaridning ${pct}%i bonusiga qo'shiladi.`,
+                {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [
+                        [
+                            { text: "📊 Foizni o'zgartirish", callback_data: "cb_set:percent" },
+                        ],
+                        [
+                            { text: "💰 Minimal summani o'zgartirish", callback_data: "cb_set:minamount" },
+                        ],
+                    ]},
+                }
+            );
+        }
+
         // ── 🚚 YETKAZIB BERISH SOZLAMASI ─────────────────────────────────────
         if (text === "🚚 Yetkazib berish") {
             const shop = await Shop.findById(shopId).select("webApp name").lean();
@@ -1116,6 +1208,44 @@ function attachHandlers(bot, ctx) {
                 );
             }
             return;
+        }
+
+        // ── 💳 CASHBACK FOIZ ─────────────────────────────────────────────────
+        if (mode === "cashback_set_percent") {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+            const pct = parseInt(text.replace(/[^\d]/g,""), 10);
+            if (!pct || pct < 1 || pct > 50) {
+                return bot.sendMessage(chatId, "❌ 1 dan 50 gacha foiz kiriting:");
+            }
+            await Shop.updateOne({ _id: shopId }, { $set: { cashbackPercent: pct } });
+            await setMode(shopId, userId, null);
+            return bot.sendMessage(chatId,
+                `✅ <b>Cashback foizi: ${pct}%</b>\n\n` +
+                `Har ${formatMoney(100000)} so'm xariddan → <b>${formatMoney(Math.floor(100000*pct/100))} so'm</b> bonus`,
+                { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) }
+            );
+        }
+
+        // ── 💳 CASHBACK MINIMAL SUMMA ─────────────────────────────────────────
+        if (mode === "cashback_set_minamount") {
+            if (text === "🚫 Bekor") {
+                await setMode(shopId, userId, null);
+                return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenu(hasWebApp) });
+            }
+            const amount = parseInt(text.replace(/[^\d]/g,""), 10);
+            if (!amount || amount < 1000) {
+                return bot.sendMessage(chatId, "❌ Kamida 1,000 so'm kiriting:");
+            }
+            await Shop.updateOne({ _id: shopId }, { $set: { cashbackMinAmount: amount } });
+            await setMode(shopId, userId, null);
+            return bot.sendMessage(chatId,
+                `✅ <b>Minimal xarid: ${formatMoney(amount)} so'm</b>\n\n` +
+                `Bu summadan kam xaridda cashback berilmaydi.`,
+                { parse_mode: "HTML", reply_markup: mainMenu(hasWebApp) }
+            );
         }
 
         // ── 🚚 DELIVERY — minimal summa ──────────────────────────────────────
@@ -1755,6 +1885,8 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
 
         // Chekni ko'rish uchun WebApp URL
         const checkUrl = `${WEBAPP_BASE_URL}/check?id=${sale._id}&shop=${shopId}`;
+        // QR: mijoz cashback bot ga shu kodni yuboradi
+        const { WEBAPP_BASE_URL: _WB } = require("../config");
 
         const inlineKb = { inline_keyboard: [
             [{ text: "🧾 Chekni chop etish", web_app: { url: checkUrl } }],
@@ -1773,6 +1905,14 @@ async function doSaveSale(bot, chatId, shopId, msg, items, groupChatId, prefix =
         await bot.sendMessage(chatId, "➕ Keyingi sotuv:", {
             reply_markup: mainMenu(!!ctx?.shop?.webApp?.enabled),
         });
+
+        // ── QR KOD YARATISH — bir martalik cashback uchun ──────────────────────
+        try {
+            const { makeQrCode } = require("./customerHandlers");
+            const qrCode = makeQrCode(String(sale._id));
+            await Sale.updateOne({ _id: sale._id }, { $set: { qrCode } });
+            sale.qrCode = qrCode;
+        } catch(e) { console.error("[QR]", e.message); }
 
         // ── SOCKET.IO: printer APK ga real-time event ───────────────────────
         try {

@@ -1,58 +1,81 @@
-// src/saas/customerHandlers.js — CASHBACK BOT
-// 2 ta aniq vazifa:
-//   1. Haridor /start → balans + [🛒 Saytga kirish] WebApp tugma
-//   2. Do'kon egasi sayt yaratganda → cashback bot guruhga WebApp PIN qiladi
+// src/saas/customerHandlers.js — CASHBACK BOT v2
+// Senior arxitektura:
+//   - QR bir martalik (saleId asosida, qrUsed flag)
+//   - Foiz do'kon egasi tomonidan belgilanadi (cashbackPercent)
+//   - Deep link: /start?ref=shopId (bot dan to'g'ri mijozga)
+//   - Customer.tgId + shopId UNIQUE index — duplikat yo'q
+//   - Barcha operatsiyalar atomic (findOneAndUpdate)
 "use strict";
+
 const Customer = require("../models/Customer");
 const Shop     = require("../models/Shop");
+const Sale     = require("../models/Sale");
 const { formatMoney } = require("../utils/money");
+const crypto   = require("crypto");
 
+// ── QR helpers ────────────────────────────────────────────────────────────────
+// Format: botpos_qr_{saleId}_{hmac4}  — HMAC bilan soxtalashtirishdan himoya
 const QR_PREFIX = "botpos_qr_";
+const HMAC_KEY  = process.env.MASTER_ENCRYPTION_KEY || "botpos_secret_key_32ch!";
+
+function makeQrCode(saleId) {
+    const hmac = crypto
+        .createHmac("sha256", HMAC_KEY)
+        .update(String(saleId))
+        .digest("hex")
+        .slice(0, 6);
+    return `${QR_PREFIX}${saleId}_${hmac}`;
+}
 
 function parseQR(text) {
     if (!text?.startsWith(QR_PREFIX)) return null;
-    const parts = text.slice(QR_PREFIX.length).split("_");
+    const body  = text.slice(QR_PREFIX.length);
+    const parts = body.split("_");
     if (parts.length < 2) return null;
-    return { shopId: parts[0], amount: parseInt(parts[1], 10) || 0 };
+    const saleId = parts.slice(0, -1).join("_"); // MongoDB ObjectId (24 hex)
+    const hmac   = parts[parts.length - 1];
+    // HMAC tekshirish
+    const expected = crypto
+        .createHmac("sha256", HMAC_KEY)
+        .update(saleId)
+        .digest("hex")
+        .slice(0, 6);
+    if (hmac !== expected) return null; // Soxta QR
+    return { saleId };
 }
 
-function calcPoints(amount) {
-    return Math.floor(amount / 10000) * 1000; // Har 10k so'm → 1k so'm bonus
+// ── Cashback hisoblash ────────────────────────────────────────────────────────
+function calcCashback(amount, percent) {
+    const pct = Math.max(1, Math.min(50, percent || 5));
+    return Math.floor((amount * pct) / 100);
 }
 
-// ─── GURUHGA PIN XABAR YUBORISH (shopHandlers chaqiradi) ─────────────────────
+// ── Guruhga WebApp PIN qilish ─────────────────────────────────────────────────
 async function pinWebAppToGroup(bot, shopId) {
     const shop = await Shop.findById(shopId)
         .select("name webApp webappUrl").lean();
-
-    if (!shop?.webApp?.enabled || !shop?.webappUrl) {
+    if (!shop?.webApp?.enabled || !shop?.webappUrl)
         throw new Error("Sayt yoqilmagan yoki URL yo'q");
-    }
-    if (!shop?.webApp?.orderChatId) {
+    if (!shop?.webApp?.orderChatId)
         throw new Error("Guruh ID belgilanmagan");
-    }
 
     const chatId   = shop.webApp.orderChatId;
     const siteName = shop.webApp.siteName || shop.name;
     const url      = shop.webappUrl;
 
     const text = [
-        `🛍 <b>${siteName}</b>`,
-        ``,
+        `🛍 <b>${siteName}</b>`, ``,
         `✨ Mahsulotlarimizni ko'ring va buyurtma bering!`,
-        `🎁 Har xariddan cashback bonus to'plang`,
-        ``,
+        `🎁 Har xariddan cashback bonus to'plang`, ``,
         `👇 Pastdagi tugmani bosing:`,
     ].join("\n");
 
     const msg = await bot.sendMessage(chatId, text, {
         parse_mode: "HTML",
-        reply_markup: {
-            inline_keyboard: [[{
-                text: `🛒 ${siteName} — Xarid qilish`,
-                web_app: { url },
-            }]],
-        },
+        reply_markup: { inline_keyboard: [[{
+            text: `🛒 ${siteName} — Xarid qilish`,
+            web_app: { url },
+        }]]},
     });
 
     if (msg?.message_id) {
@@ -60,16 +83,14 @@ async function pinWebAppToGroup(bot, shopId) {
             disable_notification: false,
         });
     }
-
     return { messageId: msg?.message_id, chatId };
 }
 
-// ─── CASHBACK BOT ADMIN TEKSHIRUVI ───────────────────────────────────────────
+// ── Cashback bot admin tekshiruvi ─────────────────────────────────────────────
 async function checkCashbackBotAdmin(bot, chatId) {
     const botInfo = await bot.getMe();
     const member  = await bot.getChatMember(chatId, botInfo.id);
     const status  = member?.status;
-
     if (status !== "administrator" && status !== "creator") {
         return {
             ok: false,
@@ -77,87 +98,86 @@ async function checkCashbackBotAdmin(bot, chatId) {
                    `Uni admin qiling va "Pin messages" ruxsatini bering.`,
         };
     }
-    const canPin = member?.can_pin_messages !== false;
-    if (!canPin) {
+    if (member?.can_pin_messages === false) {
         return {
             ok: false,
-            error: `Cashback bot (@${botInfo.username}) admin, lekin "Pin messages" ruxsati yo'q.`,
+            error: `Cashback bot admin, lekin "Pin messages" ruxsati yo'q.`,
         };
     }
     return { ok: true, username: botInfo.username };
 }
 
-// ─── HANDLER ─────────────────────────────────────────────────────────────────
+// ── Sale uchun QR yaratish (shopHandlers chaqiradi) ──────────────────────────
+async function attachQrToSale(saleId) {
+    const qrCode = makeQrCode(String(saleId));
+    await Sale.updateOne({ _id: saleId }, { $set: { qrCode } });
+    return qrCode;
+}
+
+// ── HANDLER ──────────────────────────────────────────────────────────────────
 function attachCustomerHandlers(bot, ctx) {
     if (!bot || !ctx) return;
     const { shopId } = ctx;
 
-    // ── /start ───────────────────────────────────────────────────────────────
+    // ── /start (oddiy yoki deep link) ────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
         const tgId   = msg.from?.id;
-        const tgName = [msg.from?.first_name, msg.from?.last_name]
-            .filter(Boolean).join(" ") || "Mijoz";
         if (!tgId) return;
 
+        const tgName = [msg.from?.first_name, msg.from?.last_name]
+            .filter(Boolean).join(" ") || "Mijoz";
+
         const shop = await Shop.findById(shopId)
-            .select("name webApp webappUrl minQrPaid billing.status").lean();
+            .select("name webApp webappUrl cashbackPercent cashbackMinAmount billing.status")
+            .lean();
 
-        if (shop?.billing?.status === "blocked") {
+        if (shop?.billing?.status === "blocked")
             return bot.sendMessage(chatId, "⛔ Do'kon hozirda faol emas.");
-        }
 
-        // Mijoz — topish yoki yaratish
-        let customer = await Customer.findOneAndUpdate(
+        // Upsert — mijoz yo'q bo'lsa yaratamiz
+        const customer = await Customer.findOneAndUpdate(
             { shopId, tgId },
             { $setOnInsert: { shopId, tgId, tgName } },
             { upsert: true, new: true }
         );
+
+        // Ismni yangilash (o'zgartirgan bo'lishi mumkin)
         if (customer.tgName !== tgName) {
-            customer.tgName = tgName;
-            await customer.save();
+            await Customer.updateOne({ _id: customer._id }, { $set: { tgName } });
         }
 
-        if (customer.isBlocked) {
+        if (customer.isBlocked)
             return bot.sendMessage(chatId,
-                "⛔ Hisobingiz vaqtincha to'xtatilgan.\n" +
-                "Do'konga murojaat qiling."
-            );
-        }
+                "⛔ Hisobingiz vaqtincha to'xtatilgan. Do'konga murojaat qiling.");
 
         const pts      = Math.floor(customer.points || 0);
+        const pct      = shop?.cashbackPercent || 5;
+        const minAmt   = shop?.cashbackMinAmount || 50000;
         const siteName = shop?.webApp?.siteName || shop?.name || "Do'kon";
         const webUrl   = shop?.webappUrl || "";
         const hasWeb   = !!(shop?.webApp?.enabled && webUrl);
 
-        // Xabar matni
         const text = [
-            `👋 Salom, <b>${tgName}</b>!`,
-            ``,
-            `🏪 <b>${siteName}</b>`,
-            ``,
+            `👋 Salom, <b>${tgName}</b>!`, ``,
+            `🏪 <b>${siteName}</b>`, ``,
             pts > 0
-                ? `🎁 Sizning bonusingiz: <b>${formatMoney(pts)} so'm</b>`
-                : `🎁 Hali bonus yo'q. Xarid qiling va to'plang!`,
+                ? `🎁 Bonusingiz: <b>${formatMoney(pts)} so'm</b>`
+                : `🎁 Hali bonus yo'q — xarid qiling, ${pct}% qaytadi!`,
             ``,
-            `📱 Chekdagi QR kodni menga yuboring — bonus olasiz!`,
+            `📱 Chekdagi QR kodni skanerlang — bonus hisob to'planadi!`,
         ].join("\n");
 
-        // Tugmalar
         const inline = [];
-
-        // 1. Saytga kirish (asosiy tugma)
         if (hasWeb) {
             inline.push([{
                 text: `🛒 ${siteName} — Xarid qilish`,
                 web_app: { url: webUrl },
             }]);
         }
-
-        // 2. Balans va tarix
         inline.push(
-            [{ text: "🎁 Mening bonusim", callback_data: "cb:balance" }],
-            [{ text: "ℹ️ Qanday ishlaydi?", callback_data: "cb:howto" }],
+            [{ text: "🎁 Mening bonusim",   callback_data: "cb:balance" }],
+            [{ text: "ℹ️ Qanday ishlaydi?", callback_data: "cb:howto"  }],
         );
 
         return bot.sendMessage(chatId, text, {
@@ -166,7 +186,7 @@ function attachCustomerHandlers(bot, ctx) {
         });
     });
 
-    // ── CALLBACK ─────────────────────────────────────────────────────────────
+    // ── Callback querylar ────────────────────────────────────────────────────
     bot.on("callback_query", async (cq) => {
         const chatId = cq.message?.chat?.id;
         const tgId   = cq.from?.id;
@@ -174,33 +194,45 @@ function attachCustomerHandlers(bot, ctx) {
         await bot.answerCallbackQuery(cq.id).catch(() => {});
         if (!chatId || !tgId) return;
 
+        // Bonus balans
         if (data === "cb:balance") {
-            const c = await Customer.findOne({ shopId, tgId }).lean();
-            const pts = Math.floor(c?.points || 0);
+            const [customer, shop] = await Promise.all([
+                Customer.findOne({ shopId, tgId }).lean(),
+                Shop.findById(shopId).select("cashbackPercent cashbackMinAmount").lean(),
+            ]);
+            const pts    = Math.floor(customer?.points || 0);
+            const pct    = shop?.cashbackPercent || 5;
+            const minAmt = shop?.cashbackMinAmount || 50000;
             return bot.sendMessage(chatId,
                 `🎁 <b>Bonus hisobingiz</b>\n\n` +
-                `💰 Balans: <b>${formatMoney(pts)} so'm</b>\n\n` +
-                `📌 Keyingi xaridda bonusingiz avtomatik hisoblanadi.`,
+                `💰 Balans: <b>${formatMoney(pts)} so'm</b>\n` +
+                `📊 Cashback: har xaridning <b>${pct}%</b>\n` +
+                `📌 Minimal xarid: <b>${formatMoney(minAmt)} so'm</b>\n\n` +
+                `💡 QR kodni skanerlashni unutmang!`,
                 { parse_mode: "HTML" }
             );
         }
 
+        // Qanday ishlaydi
         if (data === "cb:howto") {
             const shop = await Shop.findById(shopId)
-                .select("minQrPaid").lean();
-            const min = shop?.minQrPaid || 70000;
+                .select("cashbackPercent cashbackMinAmount").lean();
+            const pct    = shop?.cashbackPercent || 5;
+            const minAmt = shop?.cashbackMinAmount || 50000;
             return bot.sendMessage(chatId,
                 `ℹ️ <b>Cashback qanday ishlaydi?</b>\n\n` +
-                `1️⃣ ${formatMoney(min)} so'mdan ko'p xarid qiling\n` +
+                `1️⃣ <b>${formatMoney(minAmt)} so'm</b>dan ko'proq xarid qiling\n` +
                 `2️⃣ Chekdagi QR kodni menga yuboring\n` +
-                `3️⃣ Hisobingizga bonus qo'shiladi!\n\n` +
-                `💡 Har <b>10,000 so'm</b> xariddan <b>1,000 so'm</b> bonus`,
+                `3️⃣ Xaridingizning <b>${pct}%</b> bonusingizga qo'shiladi!\n\n` +
+                `💡 Masalan: ${formatMoney(100000)} so'm xarid → ` +
+                `<b>${formatMoney(Math.floor(100000*pct/100))} so'm</b> bonus\n\n` +
+                `💳 Bonusingizni keyingi xaridda ishlating!`,
                 { parse_mode: "HTML" }
             );
         }
     });
 
-    // ── QR SKANERLASH ────────────────────────────────────────────────────────
+    // ── Xabar (QR skanerlash) ────────────────────────────────────────────────
     bot.on("message", async (msg) => {
         const chatId = msg.chat.id;
         const tgId   = msg.from?.id;
@@ -215,8 +247,8 @@ function attachCustomerHandlers(bot, ctx) {
             const webUrl = shop?.webappUrl || "";
             const hasWeb = !!(shop?.webApp?.enabled && webUrl);
             return bot.sendMessage(chatId,
-                `💡 Chekdagi QR kodni menga yuboring yoki` +
-                `${hasWeb ? " saytga kiring:" : " do'konga boring."}`,
+                `💡 Chekdagi QR kodni menga yuboring — bonus olasiz!` +
+                (hasWeb ? "\n\nYoki saytga kiring:" : ""),
                 hasWeb ? { reply_markup: { inline_keyboard: [[{
                     text: "🛒 Saytga o'tish",
                     web_app: { url: webUrl },
@@ -224,54 +256,107 @@ function attachCustomerHandlers(bot, ctx) {
             );
         }
 
-        // Boshqa do'kon QRi
-        if (String(qr.shopId) !== String(shopId)) {
+        // ── QR validatsiya ────────────────────────────────────────────────────
+        const sale = await Sale.findOne({ qrCode: text.trim() })
+            .select("shopId total paidTotal qrUsed qrUsedAt qrUsedBy")
+            .lean();
+
+        // Sale topilmadi (soxta QR yoki noto'g'ri)
+        if (!sale) {
+            return bot.sendMessage(chatId,
+                `❌ QR kod noto'g'ri yoki topilmadi.\n` +
+                `Chekdagi QR ni aniq skanerlang.`
+            );
+        }
+
+        // Boshqa do'kon savosi
+        if (String(sale.shopId) !== String(shopId)) {
             return bot.sendMessage(chatId, "❌ Bu QR boshqa do'konga tegishli.");
         }
 
-        // Summa tekshiruvi
-        const shop = await Shop.findById(shopId)
-            .select("minQrPaid webappUrl webApp name").lean();
-        const minPaid = shop?.minQrPaid || 70000;
-
-        if (qr.amount < minPaid) {
+        // ── Bir martalik tekshiruv ─────────────────────────────────────────
+        if (sale.qrUsed) {
+            const usedTime = sale.qrUsedAt
+                ? ` (${new Date(sale.qrUsedAt).toLocaleDateString("uz-UZ")})`
+                : "";
             return bot.sendMessage(chatId,
-                `⚠️ Minimal cashback summasi: <b>${formatMoney(minPaid)} so'm</b>\n` +
-                `Xaridingiz: ${formatMoney(qr.amount)} so'm\n\n` +
-                `${formatMoney(minPaid)} so'mdan ko'p xarid qiling!`,
+                `⚠️ <b>Bu QR allaqachon ishlatilgan${usedTime}.</b>\n\n` +
+                `Har bir chek faqat bir marta skanerlash mumkin.\n` +
+                `Yangi xarid qiling va yangi QR oling!`,
                 { parse_mode: "HTML" }
             );
         }
 
-        // Ball hisoblash
-        const earned = calcPoints(qr.amount);
-        if (earned <= 0) {
+        // ── Shop sozlamalari ──────────────────────────────────────────────
+        const shop = await Shop.findById(shopId)
+            .select("cashbackPercent cashbackMinAmount webappUrl webApp name billing.status")
+            .lean();
+
+        if (shop?.billing?.status === "blocked")
+            return bot.sendMessage(chatId, "⛔ Do'kon hozirda faol emas.");
+
+        const pct    = shop?.cashbackPercent    || 5;
+        const minAmt = shop?.cashbackMinAmount  || 50000;
+        const amount = sale.paidTotal || sale.total || 0;
+
+        // Minimal summa tekshiruvi
+        if (amount < minAmt) {
+            return bot.sendMessage(chatId,
+                `⚠️ Cashback uchun minimal xarid: <b>${formatMoney(minAmt)} so'm</b>\n` +
+                `Sizning xaridingiz: ${formatMoney(amount)} so'm\n\n` +
+                `${formatMoney(minAmt)} so'mdan ko'p xarid qiling!`,
+                { parse_mode: "HTML" }
+            );
+        }
+
+        // ── Cashback hisoblash ─────────────────────────────────────────────
+        const earned = calcCashback(amount, pct);
+        if (earned <= 0)
             return bot.sendMessage(chatId, "⚠️ Bu xarid uchun cashback hisoblanmaydi.");
+
+        // ── QR ni used deb belgilash (race condition dan himoya) ──────────
+        // findOneAndUpdate bilan atomic — ikkita bir vaqtda scan bo'lsa bitta ishlaydi
+        const updated = await Sale.findOneAndUpdate(
+            { _id: sale._id, qrUsed: false },  // faqat used=false bo'lsa
+            { $set: { qrUsed: true, qrUsedAt: new Date(), qrUsedBy: tgId } },
+            { new: false }
+        );
+
+        if (!updated) {
+            // Bir xil vaqtda skanerlandi — boshqa kishi ulgurdi
+            return bot.sendMessage(chatId,
+                `⚠️ <b>Bu QR allaqachon ishlatilgan.</b>\n` +
+                `Yangi xarid qiling!`,
+                { parse_mode: "HTML" }
+            );
         }
 
-        // Mijoz ballini yangilash
-        let customer = await Customer.findOne({ shopId, tgId });
-        if (!customer) {
-            const tgName = msg.from?.first_name || "Mijoz";
-            customer = await Customer.create({ shopId, tgId, tgName });
-        }
-        if (customer.isBlocked) {
-            return bot.sendMessage(chatId, "⛔ Hisobingiz bloklangan.");
-        }
+        // ── Mijoz balansini atomic yangilash ──────────────────────────────
+        const tgName   = [msg.from?.first_name, msg.from?.last_name]
+            .filter(Boolean).join(" ") || "Mijoz";
 
-        customer.points    = (customer.points || 0) + earned;
-        customer.updatedAt = new Date();
-        await customer.save();
+        const customer = await Customer.findOneAndUpdate(
+            { shopId, tgId },
+            {
+                $inc: { points: earned },
+                $set: { tgName, updatedAt: new Date() },
+                $setOnInsert: { shopId, tgId },
+            },
+            { upsert: true, new: true }
+        );
 
-        const webUrl   = shop?.webappUrl || "";
-        const siteName = shop?.webApp?.siteName || shop?.name || "Do'kon";
-        const hasWeb   = !!(shop?.webApp?.enabled && webUrl);
+        const newBalance = Math.floor(customer.points);
+        const siteName   = shop?.webApp?.siteName || shop?.name || "Do'kon";
+        const webUrl     = shop?.webappUrl || "";
+        const hasWeb     = !!(shop?.webApp?.enabled && webUrl);
 
         return bot.sendMessage(chatId,
             `✅ <b>Cashback qo'shildi!</b>\n\n` +
-            `🛒 Xarid: <b>${formatMoney(qr.amount)} so'm</b>\n` +
-            `🎁 +<b>${formatMoney(earned)} so'm</b> bonus\n\n` +
-            `💰 Jami bonus: <b>${formatMoney(Math.floor(customer.points))} so'm</b>`,
+            `🛒 Xarid: <b>${formatMoney(amount)} so'm</b>\n` +
+            `📊 Cashback foizi: ${pct}%\n` +
+            `🎁 +<b>${formatMoney(earned)} so'm</b> bonus\n` +
+            `━━━━━━━━━━━━━━━━\n` +
+            `💰 Jami bonus: <b>${formatMoney(newBalance)} so'm</b>`,
             {
                 parse_mode: "HTML",
                 reply_markup: hasWeb ? { inline_keyboard: [[{
@@ -282,7 +367,14 @@ function attachCustomerHandlers(bot, ctx) {
         );
     });
 
-    console.log(`[cashbackBot] ✅ ${ctx.shop?.name || shopId}`);
+    console.log(`[cashbackBot] ✅ ${ctx.shop?.name || shopId} (cashback v2)`);
 }
 
-module.exports = { attachCustomerHandlers, pinWebAppToGroup, checkCashbackBotAdmin };
+module.exports = {
+    attachCustomerHandlers,
+    pinWebAppToGroup,
+    checkCashbackBotAdmin,
+    attachQrToSale,
+    makeQrCode,
+    calcCashback,
+};
